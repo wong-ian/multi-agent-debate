@@ -1,0 +1,9 @@
+pyautogen==0.2.20
+python-dotenv==1.0.1
+fastapi==0.111.0
+uvicorn==0.29.0
+pydantic
+pandas==2.2.2
+scikit-learn==1.4.2
+bertopic==0.16.0
+sentence-transformers==2.7.0
