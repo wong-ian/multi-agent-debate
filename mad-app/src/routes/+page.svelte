@@ -1,6 +1,8 @@
 <script lang="ts">
+    import { tick } from 'svelte';
     import type { AgentConfig, AgentName, DebateStatus, Message } from '$lib/types.ts';
-    import { startDebateSession, continueDebateSession, analyzeDebate } from '$lib/services/apiService.ts';
+    // IMPORTS: Added saveDebate for data persistence
+    import { startDebateSession, continueDebateSession, analyzeDebate, saveDebate } from '$lib/services/apiService.ts';
     import type { AnalysisResult } from '$lib/types.ts';
     
     // Components
@@ -63,21 +65,6 @@ Your response MUST end with one of these exact phrases:`;
 
     // --- HELPER FUNCTIONS ---
     
-    const triggerMastAnalysis = async (roundNum: number, roundMsgs: Message[]) => {
-        try {
-            const res = await fetch('http://localhost:8000/api/mast-analyze', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: roundMsgs })
-            });
-            const result = await res.json();
-            // Assign to new object to trigger Svelte reactivity
-            roundAnalyses = { ...roundAnalyses, [roundNum]: result };
-        } catch (e) {
-            console.error("Shadow Judge analysis failed:", e);
-        }
-    };
-
     const updateJudgeSystemMessage = (currentAgents: AgentConfig[]) => {
         const currentDebaters = currentAgents.filter(a => a.name.startsWith('Debater_'));
         const winnerOptions = currentDebaters.map(d => `Round Winner: ${d.name}`).join('\n');
@@ -137,40 +124,43 @@ Your response MUST end with one of these exact phrases:`;
         }
     };
 
+    // --- CORE LOGIC ---
+
+    // Handles typing effects AND triggers MAST analysis per round
     const processNewMessages = async (newMsgs: Message[]) => {
         // 1. Visually type out each message in the round
         for (const msg of newMsgs) {
-            nextSpeaker = msg.agent; // Update visual loader [cite: 3398]
+            nextSpeaker = msg.agent; 
             const delay = Math.min(Math.max(msg.content.length * 5, 1000), 3000);
-            await new Promise(r => setTimeout(r, delay)); // Visual typing delay [cite: 3399]
+            await new Promise(r => setTimeout(r, delay)); 
 
-            messages = [...messages, msg]; // Append message for display [cite: 3399]
+            messages = [...messages, msg]; 
             
-            // Track scores if the Judge declared a winner [cite: 3400]
+            // Track scores if the Judge declared a winner
             if (msg.agent === 'Judge') {
                 const match = msg.content.match(/Round Winner: (Debater_[A-Z])/i);
                 if (match && scores[match[1]] !== undefined) {
-                    scores[match[1]] += 1; // Update reactive scoreboard [cite: 3401]
+                    scores[match[1]] += 1; 
                 }
             }
         }
         
-        nextSpeaker = undefined; // Clear loader after all messages are "typed" [cite: 3402]
+        nextSpeaker = undefined; 
 
-        // 2. Trigger MAST failure mode analysis for the round just completed [cite: 3403]
+        // 2. Trigger MAST failure mode analysis for the round just completed
         if (newMsgs.length > 0) {
             try {
                 const res = await fetch('http://localhost:8000/api/analyze-taxonomy', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ messages: newMsgs }) // Send round trace for analysis [cite: 3404]
+                    body: JSON.stringify({ messages: newMsgs }) 
                 });
 
                 if (!res.ok) throw new Error(`Server responded with ${res.status}`);
 
                 const result = await res.json();
                 
-                // Re-assigning the whole object with the new round result triggers Svelte's reactivity 
+                // Re-assigning triggers Svelte's reactivity for the Taxonomy Card
                 roundAnalyses = { ...roundAnalyses, [round]: result };
             } catch (err) {
                 console.error("Taxonomy analysis failed:", err);
@@ -178,6 +168,7 @@ Your response MUST end with one of these exact phrases:`;
         }
     };
 
+    // Initializes the debate but PAUSES after Round 1 so user can choose mode
     const handleStartDebate = async () => {
         if (!topic.trim()) {
             error = "Please enter a debate topic.";
@@ -195,7 +186,7 @@ Your response MUST end with one of these exact phrases:`;
             sessionId = result.session_id;
             round = 1;
             await processNewMessages(result.messages);
-            status = 'paused';
+            status = 'paused'; // Pauses here to allow Manual vs Auto choice
         } catch (e: any) {
             error = `Backend Error: ${e.message}`;
             status = 'error';
@@ -203,6 +194,7 @@ Your response MUST end with one of these exact phrases:`;
         }
     };
 
+    // MANUAL MODE: Steps forward one round then pauses
     const handleNextRound = async () => {
         if (!sessionId) return;
         status = 'running';
@@ -213,12 +205,9 @@ Your response MUST end with one of these exact phrases:`;
             const result = await continueDebateSession(sessionId);
             round++;
             await processNewMessages(result.messages);
+            
             if (round >= MAX_ROUNDS) {
-                status = 'finished';
-                calculateWinner();
-                try {
-                    analysisResult = await analyzeDebate(messages);
-                } catch (err) { console.error("Analysis failed", err); }
+                await finishDebate();
             } else {
                 status = 'paused';
             }
@@ -227,6 +216,44 @@ Your response MUST end with one of these exact phrases:`;
             status = 'error';
             nextSpeaker = undefined;
         }
+    };
+
+    // AUTO MODE: Runs continuously until done
+    const runAutoLoop = async () => {
+        status = 'running'; 
+        while (round < MAX_ROUNDS && status === 'running') {
+            if (!sessionId) break;
+            
+            // Visual pause between rounds
+            await new Promise(r => setTimeout(r, 1500));
+            
+            const lastSpeaker = messages[messages.length - 1]?.agent;
+            nextSpeaker = lastSpeaker === 'Judge' ? 'Debater_A' : 'Judge'; 
+
+            const result = await continueDebateSession(sessionId);
+            round++;
+            await processNewMessages(result.messages);
+        }
+
+        if (status !== 'error') {
+            await finishDebate();
+        }
+    };
+
+    // SHARED FINISH LOGIC: Calculates winner, Analyzes, and SAVES
+    const finishDebate = async () => {
+        status = 'finished';
+        calculateWinner();
+        try {
+            // Final LLM Analysis
+            analysisResult = await analyzeDebate(messages);
+            
+            // Auto-Save to Backend
+            if (sessionId && analysisResult) {
+                console.log("Saving debate...");
+                await saveDebate(sessionId, analysisResult);
+            }
+        } catch (err) { console.error("Analysis/Save failed", err); }
     };
 </script>
 
@@ -257,12 +284,20 @@ Your response MUST end with one of these exact phrases:`;
                     
                     <div class="mt-4 flex space-x-4">
                         {#if isPaused}
-                            <button
-                                on:click={handleNextRound}
-                                class="w-full flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition duration-200 animate-pulse"
-                            >
-                                <ForwardIcon /> Next Round
-                            </button>
+                            <div class="flex gap-2 w-full">
+                                <button
+                                    on:click={handleNextRound}
+                                    class="flex-1 flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition duration-200"
+                                >
+                                    <ForwardIcon /> Next
+                                </button>
+                                <button
+                                    on:click={runAutoLoop}
+                                    class="flex-1 flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg transition duration-200 animate-pulse"
+                                >
+                                    <PlayIcon /> Auto
+                                </button>
+                            </div>
                         {:else}
                             <button
                                 on:click={handleStartDebate}
@@ -271,9 +306,9 @@ Your response MUST end with one of these exact phrases:`;
                             >
                                 {#if isLoading}
                                     <div class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div>
-                                    Thinking...
+                                    Running...
                                 {:else}
-                                    <PlayIcon /> Start
+                                    <PlayIcon /> Start Debate
                                 {/if}
                             </button>
                         {/if}

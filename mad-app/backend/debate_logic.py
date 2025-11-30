@@ -1,5 +1,7 @@
 import os
 import uuid
+import json
+from datetime import datetime
 from typing import List, Dict
 from dotenv import load_dotenv
 from autogen.agentchat import AssistantAgent, GroupChat, GroupChatManager, UserProxyAgent
@@ -130,3 +132,76 @@ def continue_debate_session(session_id: str) -> Dict:
         "session_id": session_id,
         "messages": new_messages
     }
+    
+    
+def save_debate_to_file(session_id: str, analysis_result: Dict) -> Dict:
+    """
+    Compiles the debate history and saves it to the /saved_debates folder.
+    """
+    import os, json, re # Ensure these are imported at the top
+    from collections import Counter
+    from autogen.agentchat import AssistantAgent
+
+    if session_id not in SESSIONS:
+        return {"error": "Session not found"}
+
+    session = SESSIONS[session_id]
+    messages = session["group_chat"].messages
+    
+    # 1. Parse Transcript & Scores (Uses the existing parse_messages logic)
+    transcript = parse_messages(messages, start_index=0)
+    
+    # Calculate Scores/Winner based on transcript
+    scores = Counter()
+    for msg in transcript:
+        if msg['agent'] == 'Judge':
+            match = re.search(r"Round Winner: (Debater_[A-Z])", msg['content'], re.IGNORECASE)
+            if match:
+                scores[match.group(1)] += 1
+    
+    final_scores = dict(scores) # Ensures standard dict format
+    winner = max(final_scores, key=final_scores.get) if final_scores else "Tie"
+    
+    # Check for ties
+    if final_scores:
+        top_score = final_scores[winner]
+        if len([k for k, v in final_scores.items() if v == top_score]) > 1:
+            winner = "Tie"
+
+    # 2. Build Configuration List
+    config = []
+    for agent in session["group_chat"].agents:
+        if isinstance(agent, AssistantAgent):
+            config.append({
+                "name": agent.name,
+                "system_message": agent.system_message
+            })
+
+    # 3. Construct Final JSON
+    data = {
+        "metadata": {
+            "topic": messages[0].get("content", "Unknown Topic").replace("Debate Topic: ", ""),
+            "total_rounds": transcript[-1]['round'] if transcript else 0,
+            "winner": winner,
+            "final_scores": final_scores
+        },
+        "configuration": config,
+        "transcript": transcript,
+        "analysis": analysis_result
+    }
+
+    # 4. Save to Disk
+    directory = "saved_debates"
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+    safe_topic = re.sub(r'[^a-zA-Z0-9]', '_', data['metadata']['topic'][:30])
+    filename = f"{directory}/{safe_topic}.json"
+    
+    with open(filename, "w", encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+    # 5. Clean up the session state (CRUCIAL: Releases memory)
+    del SESSIONS[session_id]
+
+    return {"status": "saved", "filename": filename}
