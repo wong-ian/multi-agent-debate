@@ -1,7 +1,8 @@
 <script lang="ts">
+    import { tick } from 'svelte';
     import type { AgentConfig, AgentName, DebateStatus, Message } from '$lib/types.ts';
-    // Note: Ensure apiService.ts exports startDebateSession and continueDebateSession
-    import { startDebateSession, continueDebateSession, analyzeDebate } from '$lib/services/apiService.ts';
+    // Ensure saveDebate is imported
+    import { startDebateSession, continueDebateSession, analyzeDebate, saveDebate } from '$lib/services/apiService.ts';
     import type { AnalysisResult } from '$lib/types.ts';
     
     // Components
@@ -17,7 +18,7 @@
     import ForwardIcon from '$lib/components/icons/ForwardIcon.svelte';
 
     // --- CONFIGURATION ---
-    const MAX_ROUNDS = 5; // Controls when the debate finishes
+    const MAX_ROUNDS = 5; 
     const BASE_JUDGE_MESSAGE = `You are a neutral debate judge.
 Your job is to provide a brief critique of the arguments you just heard and declare a winner for that round.
 Style: Be direct, impartial, and concise. Do not use formal salutations.
@@ -57,7 +58,6 @@ Your response MUST end with one of these exact phrases:`;
     $: debaters = agents.filter(a => a.name.startsWith('Debater_'));
     $: isLoading = status === 'running'; 
     $: isIdle = status === 'idle';
-    $: isPaused = status === 'paused'; // Used to show "Next Round" button
 
     // --- HELPER FUNCTIONS ---
     
@@ -119,22 +119,19 @@ Your response MUST end with one of these exact phrases:`;
         }
     };
 
-    // --- MAIN LOGIC ---
+    // --- MAIN LOGIC (AUTO-RUN) ---
 
-    // Takes a list of new messages from the backend and "types" them out visually
     const processNewMessages = async (newMsgs: Message[]) => {
         for (const msg of newMsgs) {
-            // Set visual indicator
             nextSpeaker = msg.agent;
-
-            // Visual delay based on length
-            const delay = Math.min(Math.max(msg.content.length * 5, 1000), 3000);
+            
+            // Artificial typing delay
+            const delay = Math.min(Math.max(msg.content.length * 5, 800), 2000);
             await new Promise(r => setTimeout(r, delay));
 
-            // Add message to display
             messages = [...messages, msg];
             
-            // Score tracking
+            // Score Update
             if (msg.agent === 'Judge') {
                 const match = msg.content.match(/Round Winner: (Debater_[A-Z])/i);
                 if (match && scores[match[1]] !== undefined) {
@@ -170,8 +167,8 @@ Your response MUST end with one of these exact phrases:`;
             round = 1;
             await processNewMessages(result.messages);
             
-            // 4. Pause and wait for user input
-            status = 'paused';
+            // 4. TRIGGER THE AUTO LOOP
+            await runAutoLoop();
 
         } catch (e: any) {
             console.error(e);
@@ -181,40 +178,43 @@ Your response MUST end with one of these exact phrases:`;
         }
     };
 
-    const handleNextRound = async () => {
-        if (!sessionId) return;
-        status = 'running';
-        
-        // Visual indicator (guess next speaker based on last)
-        const lastSpeaker = messages[messages.length - 1]?.agent;
-        nextSpeaker = lastSpeaker === 'Judge' ? 'Debater_A' : 'Judge'; 
+    // Automatically runs rounds until MAX_ROUNDS is reached
+    const runAutoLoop = async () => {
+        while (round < MAX_ROUNDS && status === 'running') {
+            if (!sessionId) break;
 
-        try {
-            // 1. Trigger Backend for Next Round
+            // Small pause between rounds for visual clarity
+            await new Promise(r => setTimeout(r, 1500));
+
+            // Set visual indicator for next round
+            nextSpeaker = 'Debater_A'; 
+
+            // Trigger Backend for Next Round
             const result = await continueDebateSession(sessionId);
             
-            // 2. Increment Round Counter visually
+            // Increment round
             round++;
-            
-            // 3. Play out new messages
+
+            // Play new messages
             await processNewMessages(result.messages);
+        }
+
+        // Finish, Analyze, and Save
+        if (status !== 'error') {
+            status = 'finished';
+            calculateWinner();
             
-            // 4. Check End Condition
-            if (round >= MAX_ROUNDS) {
-                status = 'finished';
-                calculateWinner();
-                // Fetch Analysis
-                try {
-                    analysisResult = await analyzeDebate(messages);
-                } catch (err) { console.error("Analysis failed", err); }
-            } else {
-                status = 'paused';
-            }
-        } catch (e: any) {
-            console.error(e);
-            error = `Backend Error: ${e.message}`;
-            status = 'error';
-            nextSpeaker = undefined;
+            try {
+                // Analyze
+                analysisResult = await analyzeDebate(messages);
+                
+                // Save to Backend
+                if (sessionId && analysisResult) {
+                    console.log("Saving debate...");
+                    await saveDebate(sessionId, analysisResult);
+                    console.log("Debate saved successfully.");
+                }
+            } catch (err) { console.error("Analysis/Save failed", err); }
         }
     };
 </script>
@@ -245,31 +245,22 @@ Your response MUST end with one of these exact phrases:`;
                     ></textarea>
                     
                     <div class="mt-4 flex space-x-4">
-                        {#if isPaused}
-                            <button
-                                on:click={handleNextRound}
-                                class="w-full flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition duration-200 animate-pulse"
-                            >
-                                <ForwardIcon /> Next Round
-                            </button>
-                        {:else}
-                            <button
-                                on:click={handleStartDebate}
-                                disabled={!isIdle}
-                                class="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition duration-200"
-                            >
-                                {#if isLoading}
-                                    <div class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div>
-                                    Thinking...
-                                {:else}
-                                    <PlayIcon /> Start
-                                {/if}
-                            </button>
-                        {/if}
+                        <button
+                            on:click={handleStartDebate}
+                            disabled={!isIdle}
+                            class="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition duration-200"
+                        >
+                            {#if isLoading}
+                                <div class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div>
+                                Running...
+                            {:else}
+                                <PlayIcon /> Start Auto-Debate
+                            {/if}
+                        </button>
                        
                         <button
                             on:click={handleReset}
-                            disabled={isLoading && !isPaused}
+                            disabled={isLoading}
                             class="w-full flex items-center justify-center gap-2 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-500 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition duration-200"
                         >
                             <RefreshIcon /> Reset
