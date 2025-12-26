@@ -4,13 +4,17 @@
     import ChartBarIcon from './icons/ChartBarIcon.svelte';
     import KeywordList from './KeywordList.svelte';
 
-    export let analysisResult: AnalysisResult | null;
-    export let debaters: AgentName[];
+    interface Props {
+        analysisResult: AnalysisResult | null;
+        debaters: AgentName[];
+    }
 
-    let activeTab: 'summary' | 'timeline' = 'summary';
+    let { analysisResult, debaters }: Props = $props();
+
+    let activeTab: 'summary' | 'timeline' = $state('summary');
 
     // Type Narrowing Fix: Create a reactive variable that is guaranteed non-null if analysisResult is not null
-    $: analysis = analysisResult ? analysisResult : null;
+    let analysis = $derived(analysisResult ? analysisResult : null);
 </script>
 
 <div class="bg-gray-800/50 p-4 sm:p-6 rounded-lg border border-gray-700">
@@ -25,7 +29,7 @@
         <div class="border-b border-gray-600 mb-4">
             <nav class="flex space-x-4">
                 <button
-                    on:click={() => (activeTab = 'summary')}
+                    onclick={() => (activeTab = 'summary')}
                     class={`px-3 py-2 font-medium text-sm rounded-t-lg ${
                         activeTab === 'summary' ? 'bg-gray-700/80 text-white' : 'text-gray-400 hover:text-white'
                     }`}
@@ -33,7 +37,7 @@
                     Summary
                 </button>
                 <button
-                    on:click={() => (activeTab = 'timeline')}
+                    onclick={() => (activeTab = 'timeline')}
                     class={`px-3 py-2 font-medium text-sm rounded-t-lg ${
                         activeTab === 'timeline' ? 'bg-gray-700/80 text-white' : 'text-gray-400 hover:text-white'
                     }`}

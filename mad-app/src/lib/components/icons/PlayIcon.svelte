@@ -1,3 +1,4 @@
+<!-- @migration-task Error while migrating Svelte code: $$props is used together with named props in a way that cannot be automatically migrated. -->
 <script>
     // Svelte's way of accepting all passed attributes/props, including 'class'
     export let className = 'h-6 w-6';

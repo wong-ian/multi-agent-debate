@@ -3,7 +3,11 @@
 	import { getAgentUI } from '$lib/utils.ts';
 	import BotIcon from './icons/BotIcon.svelte';
 
-	export let message: Message;
+	interface Props {
+		message: Message;
+	}
+
+	let { message }: Props = $props();
 	const ui = getAgentUI(message.agent);
 </script>
 

@@ -1,12 +1,21 @@
 <script lang="ts">
 	import { getAgentUI } from '$lib/utils.ts';
 
-	export let topic: string;
-	export let scores: Record<string, number>;
-	export let round: number;
-	export let winner: string | 'Tie' | undefined = undefined;
+	interface Props {
+		topic: string;
+		scores: Record<string, number>;
+		round: number;
+		winner?: string | 'Tie' | undefined;
+	}
 
-	$: debaters = Object.keys(scores);
+	let {
+		topic,
+		scores,
+		round,
+		winner = undefined
+	}: Props = $props();
+
+	let debaters = $derived(Object.keys(scores));
 </script>
 
 <div
@@ -15,7 +24,7 @@
 	<h2 class="text-xl font-bold text-indigo-300 mb-2 truncate" title={topic}>
 		Topic: <span class="text-gray-100 font-normal">{topic || 'Not set'}</span>
 	</h2>
-	<div class="flex justify-between items-center text-lg">
+	<div class="flex flex-col gap-4 text-lg">
 		<div class="flex gap-4 items-center flex-wrap">
 			{#each debaters as debaterName (debaterName)}
 				{@const ui = getAgentUI(debaterName)}

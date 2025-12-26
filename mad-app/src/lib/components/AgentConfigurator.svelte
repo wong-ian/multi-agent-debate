@@ -4,9 +4,13 @@
     import TrashIcon from './icons/TrashIcon.svelte';
     import { createEventDispatcher } from 'svelte';
 
-    export let agent: AgentConfig;
-    export let isRemovable: boolean = false;
-    export let disabled: boolean;
+    interface Props {
+        agent: AgentConfig;
+        isRemovable?: boolean;
+        disabled: boolean;
+    }
+
+    let { agent, isRemovable = false, disabled }: Props = $props();
 
     const dispatch = createEventDispatcher<{
         configChange: { name: AgentName; newConfig: string };
@@ -29,7 +33,7 @@
 <div class={`p-4 rounded-lg border relative ${ui.border} ${ui.bg}`}>
     {#if isRemovable}
         <button
-            on:click={handleRemove}
+            onclick={handleRemove}
             {disabled}
             class="absolute top-2 right-2 text-gray-400 hover:text-red-400 disabled:text-gray-600 disabled:cursor-not-allowed transition-colors"
             aria-label={`Remove ${agent.name}`}
@@ -41,9 +45,9 @@
     
     <textarea
         value={agent.systemMessage}
-        on:input={handleConfigChange}
+        oninput={handleConfigChange}
         {disabled}
-        class="w-full h-48 bg-gray-900/80 text-gray-200 p-2 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200 text-sm"
+        class="w-[20rem] h-48 bg-gray-900/80 text-gray-200 p-2 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200 text-sm"
         placeholder={`Enter system message for ${agent.name}`}
     ></textarea>
 </div>

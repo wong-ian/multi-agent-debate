@@ -3,11 +3,15 @@
 	import type { Keyword } from '$lib/services/nlpService.ts';
 	import { getAgentUI } from '$lib/utils.ts';
 
-	export let keywords: Keyword[];
-	export let title: string;
-	export let agentName: AgentName | undefined = undefined;
+	interface Props {
+		keywords: Keyword[];
+		title: string;
+		agentName?: AgentName | undefined;
+	}
 
-	$: ui = agentName ? getAgentUI(agentName) : null;
+	let { keywords, title, agentName = undefined }: Props = $props();
+
+	let ui = $derived(agentName ? getAgentUI(agentName) : null);
 </script>
 
 <div>
