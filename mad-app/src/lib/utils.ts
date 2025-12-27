@@ -77,9 +77,9 @@ export const getAgentUI = (name: AgentName) => {
 		};
 	}
 
-	if (name === 'Moderator') {
+	if (name === 'user') {
 		return {
-			name: 'Moderator', // Explicitly set the agent's name
+			name: 'user', // Explicitly set the agent's name
 			// ...DEBATER_COLORS[0],
 			colorName: 'Gray',
 			colorHex: '#9ca3af',

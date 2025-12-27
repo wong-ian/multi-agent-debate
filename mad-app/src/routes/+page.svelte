@@ -1,7 +1,14 @@
 <script lang="ts">
     import type { AgentConfig, AgentName, DebateStatus, Message, SpeakerMetadata } from '$lib/types.ts';
     // Note: Ensure apiService.ts exports startDebateSession and continueDebateSession
-    import { startDebateSession, continueDebateSession, analyzeDebate } from '$lib/services/apiService.ts';
+    import { 
+        startDebateSession, 
+        continueDebateSession, 
+        analyzeDebate,
+        createStreamingDebateSession,
+        initializeStreamingDebate,
+        streamDebateRound
+    } from '$lib/services/apiService.ts';
     import type { AnalysisResult } from '$lib/types.ts';
     import { getAgentUI } from '$lib/utils.ts';
     // Components
@@ -15,6 +22,7 @@
     import RefreshIcon from '$lib/components/icons/RefreshIcon.svelte';
     import PlusCircleIcon from '$lib/components/icons/PlusCircleIcon.svelte';
     import ForwardIcon from '$lib/components/icons/ForwardIcon.svelte';
+    import StopIcon from '$lib/components/icons/StopIcon.svelte';
 
     // --- CONFIGURATION ---
     const MAX_ROUNDS = 5; // Controls when the debate finishes
@@ -52,9 +60,13 @@ Your response MUST end with one of these exact phrases:`;
     let error: string | null = $state(null);
     let analysisResult: AnalysisResult | null = $state(null);
     let nextSpeaker: AgentName | undefined = $state(undefined);
+    
+    // Streaming state
+    let isStreaming = $state(false);
+    let currentStreamCleanup: (() => void) | null = null;
     let speaker_metadata: Record<AgentName, SpeakerMetadata> = $derived.by(() => {
         const metadata: Record<AgentName, SpeakerMetadata> = {};
-        metadata['Moderator'] = {
+        metadata['user'] = {
             speaker_number: 0,
             color: '#9CA3AF' // Gray
         };
@@ -149,6 +161,12 @@ Your response MUST end with one of these exact phrases:`;
     };
 
     const handleReset = () => {
+        // Clean up streaming if active
+        if (currentStreamCleanup) {
+            currentStreamCleanup();
+            currentStreamCleanup = null;
+        }
+        
         status = 'idle';
         messages = [];
         sessionId = null;
@@ -160,6 +178,7 @@ Your response MUST end with one of these exact phrases:`;
         error = null;
         analysisResult = null;
         nextSpeaker = undefined;
+        isStreaming = false;
     };
 
     const calculateWinner = () => {
@@ -275,6 +294,198 @@ Your response MUST end with one of these exact phrases:`;
             nextSpeaker = undefined;
         }
     };
+
+    // --- STREAMING FUNCTIONS ---
+    
+    const handleStartStreamingDebate = async () => {
+        if (!topic.trim()) {
+            error = "Please enter a debate topic.";
+            return;
+        }
+
+        const userTopic = topic;
+        handleReset();
+        topic = userTopic;
+        
+        status = 'running';
+        isStreaming = true;
+        
+        const moderator_message = `Debate Topic: ${topic}`;
+        // messages = [{ 
+        //     agent: 'Moderator', 
+        //     content: moderator_message, 
+        //     round: 1, 
+        //     round_inner_index: 0 
+        // }];
+
+        try {
+            // Start streaming session
+            const session = await createStreamingDebateSession(moderator_message, agents);
+            sessionId = session.session_id;
+            
+            // Initialize the debate with the topic
+            // const initialization = await initializeStreamingDebate(sessionId, moderator_message);
+            
+            // Add initial messages if any
+            // if (initialization.messages && initialization.messages.length > 0) {
+            //     messages = [...messages, ...initialization.messages];
+            // }
+            
+            // Start streaming the first round
+            round = 1;
+            nextSpeaker = 'Debater_A';
+            
+            currentStreamCleanup = streamDebateRound(
+                sessionId,
+                (message) => {
+                    // Real-time message received
+                    nextSpeaker = message.agent;
+                    
+                    // Calculate round_inner_index based on current round messages
+                    const currentRoundMessages = [...messages].filter(m => m.round === round);
+                    const round_inner_index = currentRoundMessages.length;
+                    
+                    const formattedMessage = {
+                        ...message,
+                        round,
+                        round_inner_index
+                    };
+                    
+                    console.log('Received message:', formattedMessage, messages);
+                    messages = [...messages, formattedMessage];
+                    
+                    // Handle judge scoring
+                    if (message.agent === 'Judge') {
+                        const match = message.content.match(/Round Winner: (Debater_[A-Z])/i);
+                        if (match && scores[match[1]] !== undefined) {
+                            scores[match[1]] += 1;
+                        }
+                        // After judge speaks, round is complete
+                        setTimeout(() => {
+                            round++;
+                            status = 'paused';
+                            isStreaming = false;
+                            nextSpeaker = undefined;
+                        }, 1000);
+                    }
+                },
+                () => {
+                    // Round completed
+                    isStreaming = false;
+                    if (round >= MAX_ROUNDS) {
+                        status = 'finished';
+                        calculateWinner();
+                        // Fetch Analysis
+                        analyzeDebate(messages).then(result => {
+                            analysisResult = result;
+                        }).catch(err => console.error("Analysis failed", err));
+                    } else {
+                        status = 'paused';
+                    }
+                    nextSpeaker = undefined;
+                },
+                (errorMsg) => {
+                    // Error occurred
+                    console.error('Streaming error:', errorMsg);
+                    isStreaming = false;
+                    status = 'error';
+                    error = `Streaming Error: ${errorMsg}`;
+                    nextSpeaker = undefined;
+                },
+            );
+            
+        } catch (e: any) {
+            console.error(e);
+            error = `Backend Error: ${e.message}`;
+            status = 'error';
+            isStreaming = false;
+        }
+    };
+
+    const handleStopStreaming = () => {
+        if (currentStreamCleanup) {
+            currentStreamCleanup();
+            currentStreamCleanup = null;
+        }
+        isStreaming = false;
+        status = 'paused';
+        nextSpeaker = undefined;
+    };
+
+    const handleNextStreamingRound = async () => {
+        if (!sessionId) return;
+        
+        isStreaming = true;
+        status = 'running';
+        nextSpeaker = 'Debater_A';
+
+        try {
+            currentStreamCleanup = streamDebateRound(
+                sessionId,
+                (message) => {
+                    // Real-time message received
+                    nextSpeaker = message.agent;
+                    
+                    // Calculate round_inner_index based on current round messages
+                    const currentRoundMessages = messages.filter(m => m.round === round);
+                    const round_inner_index = currentRoundMessages.length;
+                    
+                    const formattedMessage = {
+                        ...message,
+                        round,
+                        round_inner_index
+                    };
+                    
+                    messages = [...messages, formattedMessage];
+                    
+                    // Handle judge scoring
+                    if (message.agent === 'Judge') {
+                        const match = message.content.match(/Round Winner: (Debater_[A-Z])/i);
+                        if (match && scores[match[1]] !== undefined) {
+                            scores[match[1]] += 1;
+                        }
+                        // After judge speaks, round is complete
+                        setTimeout(() => {
+                            round++;
+                            status = 'paused';
+                            isStreaming = false;
+                            nextSpeaker = undefined;
+                        }, 1000);
+                    }
+                },
+                () => {
+                    // Round completed
+                    isStreaming = false;
+                    if (round >= MAX_ROUNDS) {
+                        status = 'finished';
+                        calculateWinner();
+                        // Fetch Analysis
+                        analyzeDebate(messages).then(result => {
+                            analysisResult = result;
+                        }).catch(err => console.error("Analysis failed", err));
+                    } else {
+                        status = 'paused';
+                    }
+                    nextSpeaker = undefined;
+                },
+                (errorMsg) => {
+                    // Error occurred
+                    console.error('Streaming error:', errorMsg);
+                    isStreaming = false;
+                    status = 'error';
+                    error = `Streaming Error: ${errorMsg}`;
+                    nextSpeaker = undefined;
+                },
+                "Proceed to the next round of arguments."
+            );
+            
+        } catch (e: any) {
+            console.error(e);
+            error = `Backend Error: ${e.message}`;
+            status = 'error';
+            isStreaming = false;
+        }
+    };
 </script>
 
 <svelte:head>
@@ -305,33 +516,58 @@ Your response MUST end with one of these exact phrases:`;
                             placeholder="e.g., Is pineapple on pizza a culinary masterpiece?"
                         ></textarea>
                         
-                        <div class="mt-4 flex space-x-4">
-                            {#if isPaused}
+                        <div class="mt-4 flex space-x-2">
+                            {#if isStreaming}
+                                <button
+                                    onclick={handleStopStreaming}
+                                    class="flex-1 flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg transition duration-200"
+                                >
+                                    <StopIcon /> Stop Streaming
+                                </button>
+                            {:else if isPaused}
+                                <button
+                                    onclick={handleNextStreamingRound}
+                                    class="flex-1 flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition duration-200 animate-pulse"
+                                >
+                                    <ForwardIcon /> Next Round (Stream)
+                                </button>
                                 <button
                                     onclick={handleNextRound}
-                                    class="w-full flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition duration-200 animate-pulse"
+                                    class="flex-1 flex items-center justify-center gap-2 bg-orange-600 hover:bg-orange-700 text-white font-bold py-2 px-4 rounded-lg transition duration-200"
                                 >
-                                    <ForwardIcon /> Next Round
+                                    <ForwardIcon /> Next Round (Batch)
                                 </button>
                             {:else}
                                 <button
+                                    onclick={handleStartStreamingDebate}
+                                    disabled={!isIdle}
+                                    class="flex-1 flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white py-2 px-4 rounded-lg transition duration-200"
+                                >
+                                    {#if isLoading}
+                                        <div class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div>
+                                        Streaming...
+                                    {:else}
+                                        <PlayIcon /> Start Streaming
+                                    {/if}
+                                </button>
+                                <button
                                     onclick={handleStartDebate}
                                     disabled={!isIdle}
-                                    class="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white  py-2 px-4 rounded-lg transition duration-200"
+                                    class="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white py-2 px-4 rounded-lg transition duration-200"
                                 >
                                     {#if isLoading}
                                         <div class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div>
                                         Thinking...
                                     {:else}
-                                        <PlayIcon /> Start
+                                        <PlayIcon /> Start Batch
                                     {/if}
                                 </button>
                             {/if}
                            
                             <button
                                 onclick={handleReset}
-                                disabled={isLoading && !isPaused}
-                                class="w-full flex items-center justify-center gap-2 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-500 disabled:cursor-not-allowed text-white py-2 px-4 rounded-lg transition duration-200"
+                                disabled={(isLoading && !isPaused) || isStreaming}
+                                class="flex-1 flex items-center justify-center gap-2 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-500 disabled:cursor-not-allowed text-white py-2 px-4 rounded-lg transition duration-200"
                             >
                                 <RefreshIcon /> Reset
                             </button>
