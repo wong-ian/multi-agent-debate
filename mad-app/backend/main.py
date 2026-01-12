@@ -6,6 +6,7 @@ from typing import List, Dict
 # Import the new session functions
 from debate_logic import create_debate_session, continue_debate_session
 from nlp_logic import perform_analysis
+from mast_logic import analyze_round_mast
 
 app = FastAPI()
 
@@ -51,3 +52,10 @@ async def api_continue_debate(request: ContinueRequest):
 @app.post("/api/analyze-debate")
 async def api_analyze_debate(request: AnalysisRequest):
     return perform_analysis(request.messages)
+
+@app.post("/api/mast-analyze")
+async def api_mast_analyze(request: AnalysisRequest):
+    try:
+        return analyze_round_mast(request.messages)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

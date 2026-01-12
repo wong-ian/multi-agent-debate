@@ -1,6 +1,5 @@
 <script lang="ts">
     import type { AgentConfig, AgentName, DebateStatus, Message } from '$lib/types.ts';
-    // Note: Ensure apiService.ts exports startDebateSession and continueDebateSession
     import { startDebateSession, continueDebateSession, analyzeDebate } from '$lib/services/apiService.ts';
     import type { AnalysisResult } from '$lib/types.ts';
     
@@ -17,7 +16,7 @@
     import ForwardIcon from '$lib/components/icons/ForwardIcon.svelte';
 
     // --- CONFIGURATION ---
-    const MAX_ROUNDS = 5; // Controls when the debate finishes
+    const MAX_ROUNDS = 5;
     const BASE_JUDGE_MESSAGE = `You are a neutral debate judge.
 Your job is to provide a brief critique of the arguments you just heard and declare a winner for that round.
 Style: Be direct, impartial, and concise. Do not use formal salutations.
@@ -53,14 +52,32 @@ Your response MUST end with one of these exact phrases:`;
     let analysisResult: AnalysisResult | null = null;
     let nextSpeaker: AgentName | undefined = undefined;
 
+    // --- NEW: MAST ANALYSIS STATE ---
+    let roundAnalyses: Record<number, any> = {};
+
     // --- DERIVED STATE ---
     $: debaters = agents.filter(a => a.name.startsWith('Debater_'));
     $: isLoading = status === 'running'; 
     $: isIdle = status === 'idle';
-    $: isPaused = status === 'paused'; // Used to show "Next Round" button
+    $: isPaused = status === 'paused';
 
     // --- HELPER FUNCTIONS ---
     
+    const triggerMastAnalysis = async (roundNum: number, roundMsgs: Message[]) => {
+        try {
+            const res = await fetch('http://localhost:8000/api/mast-analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: roundMsgs })
+            });
+            const result = await res.json();
+            // Assign to new object to trigger Svelte reactivity
+            roundAnalyses = { ...roundAnalyses, [roundNum]: result };
+        } catch (e) {
+            console.error("Shadow Judge analysis failed:", e);
+        }
+    };
+
     const updateJudgeSystemMessage = (currentAgents: AgentConfig[]) => {
         const currentDebaters = currentAgents.filter(a => a.name.startsWith('Debater_'));
         const winnerOptions = currentDebaters.map(d => `Round Winner: ${d.name}`).join('\n');
@@ -103,6 +120,7 @@ Your response MUST end with one of these exact phrases:`;
         error = null;
         analysisResult = null;
         nextSpeaker = undefined;
+        roundAnalyses = {}; // Reset MAST data
     };
 
     const calculateWinner = () => {
@@ -119,22 +137,13 @@ Your response MUST end with one of these exact phrases:`;
         }
     };
 
-    // --- MAIN LOGIC ---
-
-    // Takes a list of new messages from the backend and "types" them out visually
     const processNewMessages = async (newMsgs: Message[]) => {
         for (const msg of newMsgs) {
-            // Set visual indicator
             nextSpeaker = msg.agent;
-
-            // Visual delay based on length
             const delay = Math.min(Math.max(msg.content.length * 5, 1000), 3000);
             await new Promise(r => setTimeout(r, delay));
 
-            // Add message to display
             messages = [...messages, msg];
-            
-            // Score tracking
             if (msg.agent === 'Judge') {
                 const match = msg.content.match(/Round Winner: (Debater_[A-Z])/i);
                 if (match && scores[match[1]] !== undefined) {
@@ -143,6 +152,10 @@ Your response MUST end with one of these exact phrases:`;
             }
         }
         nextSpeaker = undefined;
+        // Trigger MAST failure mode analysis for the round just completed
+        if (newMsgs.length > 0) {
+            await triggerMastAnalysis(round, newMsgs);
+        }
     };
 
     const handleStartDebate = async () => {
@@ -150,31 +163,20 @@ Your response MUST end with one of these exact phrases:`;
             error = "Please enter a debate topic.";
             return;
         }
-
-        // 1. Capture User Topic (Fixes Zombie Topic Bug)
         const userTopic = topic;
         handleReset();
         topic = userTopic;
-
         status = 'running';
-        // Moderator message immediate
         messages = [{ agent: 'Moderator', content: `Debate Topic: ${topic}`, round: 0 }];
-        nextSpeaker = 'Debater_A'; // Guess first speaker for loader
+        nextSpeaker = 'Debater_A';
 
         try {
-            // 2. Start Live Session (Backend runs Round 1 only)
             const result = await startDebateSession(topic, agents);
             sessionId = result.session_id;
-            
-            // 3. Play out Round 1 messages
             round = 1;
             await processNewMessages(result.messages);
-            
-            // 4. Pause and wait for user input
             status = 'paused';
-
         } catch (e: any) {
-            console.error(e);
             error = `Backend Error: ${e.message}`;
             status = 'error';
             nextSpeaker = undefined;
@@ -184,26 +186,16 @@ Your response MUST end with one of these exact phrases:`;
     const handleNextRound = async () => {
         if (!sessionId) return;
         status = 'running';
-        
-        // Visual indicator (guess next speaker based on last)
         const lastSpeaker = messages[messages.length - 1]?.agent;
         nextSpeaker = lastSpeaker === 'Judge' ? 'Debater_A' : 'Judge'; 
 
         try {
-            // 1. Trigger Backend for Next Round
             const result = await continueDebateSession(sessionId);
-            
-            // 2. Increment Round Counter visually
             round++;
-            
-            // 3. Play out new messages
             await processNewMessages(result.messages);
-            
-            // 4. Check End Condition
             if (round >= MAX_ROUNDS) {
                 status = 'finished';
                 calculateWinner();
-                // Fetch Analysis
                 try {
                     analysisResult = await analyzeDebate(messages);
                 } catch (err) { console.error("Analysis failed", err); }
@@ -211,7 +203,6 @@ Your response MUST end with one of these exact phrases:`;
                 status = 'paused';
             }
         } catch (e: any) {
-            console.error(e);
             error = `Backend Error: ${e.message}`;
             status = 'error';
             nextSpeaker = undefined;
@@ -307,6 +298,7 @@ Your response MUST end with one of these exact phrases:`;
                     {isLoading} 
                     {nextSpeaker}
                     currentRound={round}
+                    {roundAnalyses} 
                 />
             </section>
         </main>

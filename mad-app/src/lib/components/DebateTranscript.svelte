@@ -5,18 +5,18 @@
     import BotIcon from './icons/BotIcon.svelte';
     import ChevronDown from './icons/ChevronDownIcon.svelte';
     import ChevronUp from './icons/ChevronUpIcon.svelte';
+    import TaxonomyCard from './TaxonomyCard.svelte'; // Ensure this exists
 
     export let messages: Message[];
     export let isLoading: boolean;
     export let nextSpeaker: AgentName | undefined = undefined;
     export let currentRound: number;
+    export let roundAnalyses: Record<number, any> = {};
 
     let scrollContainer: HTMLDivElement;
     let shouldAutoScroll = false;
-    // Track which rounds are open
     let openRounds: Record<number, boolean> = {};
 
-    // Group messages by round
     $: groupedMessages = messages.reduce((acc, msg) => {
         const r = msg.round || 1;
         if (!acc[r]) acc[r] = [];
@@ -30,15 +30,13 @@
         return Array.from(rounds).sort((a, b) => a - b);
     })();
 
-    // --- FIX 1: AUTO-OPEN CURRENT ROUND ---
-    // Whenever currentRound changes, ensure it is set to open in the dictionary
+    // Auto-open current round
     $: {
         if (currentRound > 0) {
             openRounds[currentRound] = true;
         }
     }
 
-    // Scroll Logic
     beforeUpdate(() => {
         if (scrollContainer) {
             const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
@@ -53,8 +51,7 @@
     });
 
     const toggleRound = (r: number) => {
-        // Svelte reactivity quirk: assign to a new object or trigger update
-        openRounds[r] = !openRounds[r]; 
+        openRounds[r] = !openRounds[r];
     };
 </script>
 
@@ -98,6 +95,12 @@
                                     <div class="w-2 h-2 bg-gray-400 rounded-full animate-pulse" style="animation-delay: 0.4s"></div>
                                 </div>
                                 {#if !nextUI.isLeft}<BotIcon className="{nextUI.icon} flex-shrink-0" />{/if}
+                            </div>
+                        {/if}
+
+                        {#if roundAnalyses[r]}
+                            <div class="pt-6 border-t border-gray-700/50">
+                                <TaxonomyCard analysis={roundAnalyses[r]} />
                             </div>
                         {/if}
                     </div>
