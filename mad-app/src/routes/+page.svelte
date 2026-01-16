@@ -138,23 +138,43 @@ Your response MUST end with one of these exact phrases:`;
     };
 
     const processNewMessages = async (newMsgs: Message[]) => {
+        // 1. Visually type out each message in the round
         for (const msg of newMsgs) {
-            nextSpeaker = msg.agent;
+            nextSpeaker = msg.agent; // Update visual loader [cite: 3398]
             const delay = Math.min(Math.max(msg.content.length * 5, 1000), 3000);
-            await new Promise(r => setTimeout(r, delay));
+            await new Promise(r => setTimeout(r, delay)); // Visual typing delay [cite: 3399]
 
-            messages = [...messages, msg];
+            messages = [...messages, msg]; // Append message for display [cite: 3399]
+            
+            // Track scores if the Judge declared a winner [cite: 3400]
             if (msg.agent === 'Judge') {
                 const match = msg.content.match(/Round Winner: (Debater_[A-Z])/i);
                 if (match && scores[match[1]] !== undefined) {
-                    scores[match[1]] += 1;
+                    scores[match[1]] += 1; // Update reactive scoreboard [cite: 3401]
                 }
             }
         }
-        nextSpeaker = undefined;
-        // Trigger MAST failure mode analysis for the round just completed
+        
+        nextSpeaker = undefined; // Clear loader after all messages are "typed" [cite: 3402]
+
+        // 2. Trigger MAST failure mode analysis for the round just completed [cite: 3403]
         if (newMsgs.length > 0) {
-            await triggerMastAnalysis(round, newMsgs);
+            try {
+                const res = await fetch('http://localhost:8000/api/analyze-taxonomy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages: newMsgs }) // Send round trace for analysis [cite: 3404]
+                });
+
+                if (!res.ok) throw new Error(`Server responded with ${res.status}`);
+
+                const result = await res.json();
+                
+                // Re-assigning the whole object with the new round result triggers Svelte's reactivity 
+                roundAnalyses = { ...roundAnalyses, [round]: result };
+            } catch (err) {
+                console.error("Taxonomy analysis failed:", err);
+            }
         }
     };
 

@@ -1,31 +1,30 @@
 <script lang="ts">
     export let analysis: {
-        failures: Array<{ mode_id: string; mode_name: string; reasoning: string }>;
-        health_score: number;
         summary: string;
+        task_progress: string;
+        failures: Array<{ id: string; name: string; detected: boolean }>;
     };
+
+    $: detectedFailures = analysis.failures.filter(f => f.detected);
 </script>
 
-<div class="mt-4 p-4 rounded-lg border border-indigo-500/30 bg-indigo-900/10">
-    <div class="flex justify-between items-center mb-2">
-        <h4 class="text-indigo-300 font-bold flex items-center gap-2">
-            <span class="text-xs px-2 py-0.5 rounded bg-indigo-500 text-white">MAST ANALYSIS</span>
-            Round Health: {analysis.health_score}%
-        </h4>
+<div class="mt-6 p-4 rounded-xl border border-indigo-500/30 bg-indigo-900/10">
+    <div class="flex items-center justify-between mb-3">
+        <h4 class="text-indigo-300 font-bold uppercase text-xs tracking-widest">MAST Round Health Check</h4>
+        <span class={`px-2 py-0.5 rounded text-[10px] font-bold ${analysis.task_progress === 'yes' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+            PROGRESS: {analysis.task_progress.toUpperCase()}
+        </span>
     </div>
     
-    <p class="text-sm text-gray-300 italic mb-3">"{analysis.summary}"</p>
+    <p class="text-sm text-gray-300 italic mb-4">"{analysis.summary}"</p>
 
-    {#if analysis.failures.length > 0}
-        <div class="space-y-2">
-            {#each analysis.failures as failure}
-                <div class="text-xs p-2 rounded bg-red-900/20 border border-red-500/30">
-                    <span class="font-bold text-red-400">{failure.mode_id} ({failure.mode_name}):</span>
-                    <span class="text-gray-200 ml-1">{failure.reasoning}</span>
-                </div>
-            {/each}
-        </div>
-    {:else}
-        <div class="text-xs text-green-400 font-semibold">✓ No MAS failure modes detected.</div>
-    {/if}
+    <div class="flex flex-wrap gap-2">
+        {#each detectedFailures as failure}
+            <div class="text-[10px] px-2 py-1 rounded bg-red-900/30 border border-red-500/30 text-red-300">
+                <span class="font-black">FM-{failure.id}:</span> {failure.name}
+            </div>
+        {:else}
+            <div class="text-[10px] text-green-400 font-semibold italic">✓ No system failure modes detected this round.</div>
+        {/each}
+    </div>
 </div>

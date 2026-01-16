@@ -3,10 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict
 
-# Import the new session functions
+# Import the correct function name from your logic file
 from debate_logic import create_debate_session, continue_debate_session
 from nlp_logic import perform_analysis
-from mast_logic import analyze_round_mast
+from mast_logic import analyze_round_taxonomy  # Make sure this matches your mast_logic.py
 
 app = FastAPI()
 
@@ -53,9 +53,9 @@ async def api_continue_debate(request: ContinueRequest):
 async def api_analyze_debate(request: AnalysisRequest):
     return perform_analysis(request.messages)
 
-@app.post("/api/mast-analyze")
-async def api_mast_analyze(request: AnalysisRequest):
+@app.post("/api/analyze-taxonomy")
+async def api_analyze_taxonomy(request: AnalysisRequest):
     try:
-        return analyze_round_mast(request.messages)
+        return analyze_round_taxonomy(request.messages)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
