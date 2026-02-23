@@ -153,7 +153,7 @@ Your response MUST end with one of these exact phrases:`;
                 const res = await fetch('http://localhost:8000/api/analyze-taxonomy', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ messages: newMsgs }) 
+                    body: JSON.stringify({ messages: messages })
                 });
 
                 if (!res.ok) throw new Error(`Server responded with ${res.status}`);
@@ -245,15 +245,23 @@ Your response MUST end with one of these exact phrases:`;
         status = 'finished';
         calculateWinner();
         try {
-            // Final LLM Analysis
-            analysisResult = await analyzeDebate(messages);
-            
-            // Auto-Save to Backend
+            // 1. Get the High-Level Summary (Keywords, etc.)
+            let fullAnalysis = await analyzeDebate(messages);
+
+            // 2. INJECT MAST DATA: Add the detailed per-round logs we collected
+            if (fullAnalysis) {
+                (fullAnalysis as any).mast_breakdown = roundAnalyses; 
+            }
+
+            analysisResult = fullAnalysis;
+
+            // 3. Auto-Save to Backend
             if (sessionId && analysisResult) {
-                console.log("Saving debate...");
+                console.log("Saving debate with full logs...");
                 await saveDebate(sessionId, analysisResult);
             }
-        } catch (err) { console.error("Analysis/Save failed", err); }
+        } catch (err) { console.error("Analysis/Save failed", err);
+        }
     };
 </script>
 
