@@ -2,7 +2,7 @@
     import { tick } from 'svelte';
     import type { AgentConfig, AgentName, DebateStatus, Message } from '$lib/types.ts';
     // IMPORTS: Added saveDebate for data persistence
-    import { startDebateSession, continueDebateSession, analyzeDebate, saveDebate } from '$lib/services/apiService.ts';
+    import { startDebateSession, continueDebateSession, analyzeDebate, saveDebate, regenerateRound } from '$lib/services/apiService.ts';
     import type { AnalysisResult } from '$lib/types.ts';
     
     // Components
@@ -10,6 +10,11 @@
     import DebateTranscript from '$lib/components/DebateTranscript.svelte';
     import Scoreboard from '$lib/components/Scoreboard.svelte';
     import DebateAnalysis from '$lib/components/DebateAnalysis.svelte';
+    import DebateVisualization from '$lib/components/DebateVisualization.svelte';
+
+    // NLP service for per-round keyword extraction
+    import { analyzeDebate as nlpAnalyze } from '$lib/services/nlpService.ts';
+    import type { Keyword } from '$lib/types.ts';
 
     // Icons
     import PlayIcon from '$lib/components/icons/PlayIcon.svelte';
@@ -54,8 +59,17 @@ Your response MUST end with one of these exact phrases:`;
     let analysisResult: AnalysisResult | null = null;
     let nextSpeaker: AgentName | undefined = undefined;
 
-    // --- NEW: MAST ANALYSIS STATE ---
+    // --- MAST ANALYSIS STATE ---
     let roundAnalyses: Record<number, any> = {};
+
+    // --- PER-ROUND KEYWORD STATE ---
+    let roundKeywords: Record<number, Keyword[]> = {};
+
+    // --- HUMAN MODERATOR INTERVENTION STATE ---
+    let regeneratedRounds: Record<number, { mastFailures: string[]; humanInput: string }> = {};
+    let showIntervention = false;
+    let interventionInput = '';
+    let isRegenerating = false;
 
     // --- DERIVED STATE ---
     $: debaters = agents.filter(a => a.name.startsWith('Debater_'));
@@ -107,7 +121,12 @@ Your response MUST end with one of these exact phrases:`;
         error = null;
         analysisResult = null;
         nextSpeaker = undefined;
-        roundAnalyses = {}; // Reset MAST data
+        roundAnalyses = {};
+        roundKeywords = {};
+        regeneratedRounds = {};
+        showIntervention = false;
+        interventionInput = '';
+        isRegenerating = false;
     };
 
     const calculateWinner = () => {
@@ -121,6 +140,89 @@ Your response MUST end with one of these exact phrases:`;
             winner = 'Tie';
         } else {
             winner = entries[0][0];
+        }
+    };
+
+    const recalculateScores = () => {
+        const newScores: Record<string, number> = {};
+        debaters.forEach(d => { newScores[d.name] = 0; });
+        messages.forEach(msg => {
+            if (msg.agent === 'Judge') {
+                const match = msg.content.match(/Round Winner: (Debater_[A-Z])/i);
+                if (match && newScores[match[1]] !== undefined) {
+                    newScores[match[1]] += 1;
+                }
+            }
+        });
+        scores = newScores;
+    };
+
+    const handleIntervene = async () => {
+        if (!sessionId) return;
+        isRegenerating = true;
+        error = null;
+
+        const currentRoundAnalysis = roundAnalyses[round];
+        const mastFailures: string[] = currentRoundAnalysis?.failures
+            ?.filter((f: any) => f.detected)
+            ?.map((f: any) => `${f.id}: ${f.name}`) || [];
+        const roundToReplace = round;
+
+        try {
+            const result = await regenerateRound(sessionId, roundToReplace, mastFailures, interventionInput);
+
+            // Replace round messages — keep everything except the replaced round
+            const kept = messages.filter(m => m.round !== roundToReplace);
+            messages = [...kept, ...result.messages];
+
+            // Track for memory cell visualization
+            regeneratedRounds = {
+                ...regeneratedRounds,
+                [roundToReplace]: { mastFailures, humanInput: interventionInput }
+            };
+
+            // Clear stale analysis/keywords for this round
+            const { [roundToReplace]: _ra, ...restAnalyses } = roundAnalyses;
+            roundAnalyses = restAnalyses;
+            const { [roundToReplace]: _rk, ...restKeywords } = roundKeywords;
+            roundKeywords = restKeywords;
+
+            // Recalculate scores from full transcript
+            recalculateScores();
+
+            // Re-run MAST analysis on updated messages
+            try {
+                const res = await fetch('http://localhost:8000/api/analyze-taxonomy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages })
+                });
+                if (res.ok) {
+                    const mastResult = await res.json();
+                    roundAnalyses = { ...roundAnalyses, [roundToReplace]: mastResult };
+                }
+            } catch { /* non-fatal */ }
+
+            // Re-run NLP keywords for this round
+            const nlpResult = nlpAnalyze(messages, debaters.map(d => d.name));
+            if (nlpResult) {
+                const roundData = nlpResult.timeline.find(t => t.round === roundToReplace);
+                if (roundData) {
+                    const all = Object.values(roundData.keywordsByDebater)
+                        .flat()
+                        .sort((a: any, b: any) => b.score - a.score);
+                    const seen = new Set<string>();
+                    const top5 = (all as any[]).filter((k: any) => !seen.has(k.term) && seen.add(k.term)).slice(0, 5);
+                    roundKeywords = { ...roundKeywords, [roundToReplace]: top5 };
+                }
+            }
+
+            showIntervention = false;
+            interventionInput = '';
+        } catch (e: any) {
+            error = `Regeneration failed: ${e.message}`;
+        } finally {
+            isRegenerating = false;
         }
     };
 
@@ -164,6 +266,20 @@ Your response MUST end with one of these exact phrases:`;
                 roundAnalyses = { ...roundAnalyses, [round]: result };
             } catch (err) {
                 console.error("Taxonomy analysis failed:", err);
+            }
+
+            // 3. Compute per-round keywords client-side via TF-IDF
+            const nlpResult = nlpAnalyze(messages, debaters.map(d => d.name));
+            if (nlpResult) {
+                const roundData = nlpResult.timeline.find(t => t.round === round);
+                if (roundData) {
+                    const all = Object.values(roundData.keywordsByDebater)
+                        .flat()
+                        .sort((a, b) => b.score - a.score);
+                    const seen = new Set<string>();
+                    const top5 = all.filter(k => !seen.has(k.term) && seen.add(k.term)).slice(0, 5);
+                    roundKeywords = { ...roundKeywords, [round]: top5 };
+                }
             }
         }
     };
@@ -329,6 +445,65 @@ Your response MUST end with one of these exact phrases:`;
                             <RefreshIcon /> Reset
                         </button>
                     </div>
+                    {#if isPaused && round > 0}
+                        <div class="mt-3">
+                            {#if !showIntervention}
+                                <button
+                                    on:click={() => showIntervention = true}
+                                    class="w-full flex items-center justify-center gap-2 border border-amber-600 hover:bg-amber-900/30 text-amber-400 font-semibold py-2 px-4 rounded-lg transition duration-200 text-sm"
+                                >
+                                    ⚡ Intervene on Round {round}
+                                </button>
+                            {:else}
+                                <div class="bg-gray-900/80 border border-amber-700/60 rounded-lg p-3 space-y-3">
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-amber-400 font-bold text-sm">⚡ Human Moderator — Round {round}</span>
+                                        <button on:click={() => { showIntervention = false; interventionInput = ''; }} class="text-gray-500 hover:text-gray-300 text-xs">✕ cancel</button>
+                                    </div>
+
+                                    {#if roundAnalyses[round]?.failures?.filter((f: any) => f.detected).length > 0}
+                                        <div>
+                                            <p class="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-1">MAST Failures Detected:</p>
+                                            <div class="space-y-1">
+                                                {#each roundAnalyses[round].failures.filter((f: any) => f.detected) as failure}
+                                                    <div class="flex items-center gap-2 text-xs bg-red-900/30 border border-red-800/40 rounded px-2 py-1">
+                                                        <span class="font-black text-red-400">{failure.id}</span>
+                                                        <span class="text-red-200">{failure.name}</span>
+                                                    </div>
+                                                {/each}
+                                            </div>
+                                        </div>
+                                    {:else}
+                                        <p class="text-xs text-green-400 italic">No MAST failures in this round.</p>
+                                    {/if}
+
+                                    <div>
+                                        <label for="intervention-input" class="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">Your direction for Round {round}:</label>
+                                        <textarea
+                                            id="intervention-input"
+                                            bind:value={interventionInput}
+                                            class="w-full h-20 bg-gray-800 p-2 border border-gray-600 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 transition resize-none"
+                                            placeholder="e.g., Focus on concrete evidence, avoid logical fallacies..."
+                                        ></textarea>
+                                    </div>
+
+                                    <button
+                                        on:click={handleIntervene}
+                                        disabled={isRegenerating}
+                                        class="w-full flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition duration-200 text-sm"
+                                    >
+                                        {#if isRegenerating}
+                                            <div class="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></div>
+                                            Regenerating...
+                                        {:else}
+                                            ⚡ Regenerate Round {round}
+                                        {/if}
+                                    </button>
+                                </div>
+                            {/if}
+                        </div>
+                    {/if}
+
                     {#if error}
                         <p class="text-red-400 mt-2 text-sm">{error}</p>
                     {/if}
@@ -369,6 +544,12 @@ Your response MUST end with one of these exact phrases:`;
         {#if status === 'finished' && analysisResult}
             <section class="mt-8">
                 <DebateAnalysis {analysisResult} debaters={debaters.map(d => d.name)} />
+            </section>
+        {/if}
+
+        {#if messages.length > 1}
+            <section class="mt-12 pt-8 border-t border-gray-700/50">
+                <DebateVisualization {messages} {roundAnalyses} {roundKeywords} {regeneratedRounds} />
             </section>
         {/if}
     </div>

@@ -46,3 +46,18 @@ export const saveDebate = async (session_id: string, analysis_result: AnalysisRe
     if (!response.ok) throw new Error('Failed to save debate');
     return response.json(); // Returns the status object from the backend
 };
+
+export const regenerateRound = async (
+    session_id: string,
+    round_number: number,
+    mast_failures: string[],
+    human_input: string
+): Promise<SessionResponse> => {
+    const response = await fetch(`${API_BASE}/regenerate-round`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id, round_number, mast_failures, human_input })
+    });
+    if (!response.ok) throw new Error('Failed to regenerate round');
+    return response.json();
+};
