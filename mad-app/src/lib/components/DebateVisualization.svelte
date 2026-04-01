@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onMount, createEventDispatcher } from 'svelte';
     import * as d3 from 'd3';
     import type { Message } from '$lib/types.ts';
 
@@ -7,6 +7,12 @@
     export let roundAnalyses: Record<number, any> = {};
     export let roundKeywords: Record<number, { term: string; score: number }[]> = {};
     export let regeneratedRounds: Record<number, { mastFailures: string[]; humanInput: string }> = {};
+    export let isPaused: boolean = false;
+    export let currentRound: number = 0;
+
+    const dispatch = createEventDispatcher<{
+        regenerate: { roundNumber: number; mastFailures: string[]; humanInput: string };
+    }>();
 
     // DOM refs
     let swimlaneContainer: HTMLDivElement;
@@ -16,15 +22,24 @@
     let modalOpen = false;
     let modalData: any = null;
 
+    // Intervention state (for vertical thread)
+    let interventionRound: number | null = null;
+    let interventionInput: string = '';
+    let isRegenerating: boolean = false;
+
+    // Y positions for positioning overlay and scroll anchors
+    let roundSepY: Record<number, number> = {};
+    let verticalNodeY: Record<string, number> = {};
+
     const FONT = "'Calibri', 'Calibri Regular', sans-serif";
 
     const COLORS: Record<string, string> = {
         Debater_A: '#6366f1',
-        Debater_B: '#ef4444',
-        Debater_C: '#10b981',
-        Debater_D: '#a855f7',
-        Debater_E: '#ec4899',
-        Debater_F: '#14b8a6',
+        Debater_B: '#10b981',
+        Debater_C: '#a855f7',
+        Debater_D: '#ec4899',
+        Debater_E: '#14b8a6',
+        Debater_F: '#f97316',
         Judge: '#f59e0b',
         Human_Moderator: '#6b7280',
         Memory_Cell: '#d97706',
@@ -90,6 +105,14 @@
     function closeModal() {
         modalOpen = false;
         modalData = null;
+    }
+
+    function jumpToThread() {
+        if (!modalData) return;
+        const key = `${modalData.agent}-r${modalData.round}`;
+        const anchor = document.getElementById(`vthread-${key}`);
+        anchor?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        closeModal();
     }
 
     // Wrap text across multiple SVG <text> lines
@@ -331,11 +354,16 @@
         const memCellHeight = 180;
         const gap = 40;
         const roundSeparatorHeight = 80;
+        // Extra space for the intervention button when paused
+        const interventionSlotHeight = 48;
 
-        // Total height accounts for memory cells in regenerated rounds
+        // Total height accounts for memory cells and intervention slots
         const totalHeight = dataByRound.reduce((sum, rd) => {
             const hasMemCell = !!regeneratedRounds[rd.round];
-            return sum + rd.messages.length * (nodeHeight + gap) + roundSeparatorHeight + (hasMemCell ? memCellHeight + gap : 0);
+            const hasIntervention = isPaused && rd.round === currentRound && rd.round > 1;
+            return sum + rd.messages.length * (nodeHeight + gap) + roundSeparatorHeight
+                + (hasMemCell ? memCellHeight + gap : 0)
+                + (hasIntervention ? interventionSlotHeight : 0);
         }, 100);
 
         const svgSel = d3.select(verticalContainer).select<SVGSVGElement>('svg');
@@ -355,6 +383,8 @@
             .attr('stroke-dasharray', '8 8');
 
         let currentY = 60;
+        const newRoundSepY: Record<number, number> = {};
+        const newVerticalNodeY: Record<string, number> = {};
 
         dataByRound.forEach((roundData, roundIndex) => {
             const isRegen = !!regeneratedRounds[roundData.round];
@@ -375,6 +405,38 @@
                     .attr('font-size', '12px').attr('font-weight', 'bold')
                     .attr('fill', isRegen ? '#d97706' : '#6b7280')
                     .style('font-family', FONT);
+
+                // Store Y for the intervention overlay positioning
+                newRoundSepY[roundData.round] = currentY - 15;
+
+                // Intervene button — only for current paused round
+                if (isPaused && roundData.round === currentRound) {
+                    const btnWidth = 160;
+                    const btnHeight = 32;
+                    const btnX = centerX - btnWidth / 2;
+                    const btnY = currentY + 2;
+
+                    const bg = svgSel.append('g')
+                        .style('cursor', 'pointer')
+                        .on('click', () => { interventionRound = roundData.round; });
+
+                    bg.append('rect')
+                        .attr('x', btnX).attr('y', btnY)
+                        .attr('width', btnWidth).attr('height', btnHeight)
+                        .attr('rx', 8)
+                        .attr('fill', '#1c1208')
+                        .attr('stroke', '#d97706').attr('stroke-width', 1.5);
+
+                    bg.append('text')
+                        .text(`⚡ Intervene on Round ${roundData.round}`)
+                        .attr('x', centerX).attr('y', btnY + 21)
+                        .attr('text-anchor', 'middle')
+                        .attr('font-size', '11px').attr('font-weight', 'bold')
+                        .attr('fill', '#fbbf24')
+                        .style('font-family', FONT);
+
+                    currentY += interventionSlotHeight;
+                }
             }
 
             currentY += roundSeparatorHeight;
@@ -481,9 +543,13 @@
                 currentY += memCellHeight + gap;
             }
 
-            roundData.messages.forEach((d: any, msgIndex: number) => {
-                const isLeft = msgIndex % 2 === 0;
+            roundData.messages.forEach((d: any) => {
+                // Debaters on left, Judge/Moderator on right
+                const isLeft = d.agent.startsWith('Debater_');
                 const xOffset = isLeft ? centerX - 380 : centerX + 40;
+
+                // Store Y for scroll anchors
+                newVerticalNodeY[`${d.agent}-r${d.round}`] = currentY;
 
                 const g = svgSel.append('g')
                     .attr('class', 'v-node')
@@ -571,6 +637,30 @@
                 currentY += nodeHeight + gap;
             });
         });
+
+        // Commit position maps reactively
+        roundSepY = newRoundSepY;
+        verticalNodeY = newVerticalNodeY;
+    }
+
+    function handleRegenerateClick() {
+        if (!interventionRound) return;
+        isRegenerating = true;
+        const currentRoundAnalysis = roundAnalyses[interventionRound];
+        const mastFailures: string[] = currentRoundAnalysis?.failures
+            ?.filter((f: any) => f.detected)
+            ?.map((f: any) => `${f.id}: ${f.name}`) || [];
+
+        dispatch('regenerate', {
+            roundNumber: interventionRound,
+            mastFailures,
+            humanInput: interventionInput
+        });
+
+        // Parent handles the async work; reset local state
+        interventionRound = null;
+        interventionInput = '';
+        isRegenerating = false;
     }
 
     // Re-render whenever any reactive prop changes
@@ -579,6 +669,8 @@
         const _ra = roundAnalyses;
         const _rk = roundKeywords;
         const _rr = regeneratedRounds;
+        const _ip = isPaused;
+        const _cr = currentRound;
         if (swimlaneContainer && verticalContainer && _m.length > 0) {
             renderSwimlane();
             renderVertical();
@@ -631,7 +723,7 @@
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
             </svg>
-            View 2: Vertical Thread (Ping-Pong)
+            View 2: Vertical Thread
         </h3>
         <div
             bind:this={verticalContainer}
@@ -639,6 +731,70 @@
             style="height: 800px;"
         >
             <svg style="width: 100%; display: block;"></svg>
+
+            <!-- Hidden scroll anchors for each vertical node -->
+            {#each Object.entries(verticalNodeY) as [key, y]}
+                <div
+                    id="vthread-{key}"
+                    style="position: absolute; top: {y}px; height: 1px; pointer-events: none;"
+                ></div>
+            {/each}
+
+            <!-- Intervention overlay panel -->
+            {#if interventionRound !== null}
+                <div
+                    style="position: absolute; top: {(roundSepY[interventionRound] ?? 0) + 50}px; left: 50%; transform: translateX(-50%); z-index: 20; width: 420px;"
+                    class="bg-gray-900/95 border border-amber-700/60 rounded-lg p-3 space-y-3 shadow-2xl"
+                >
+                    <div class="flex items-center justify-between">
+                        <span class="text-amber-400 font-bold text-sm">⚡ Human Moderator — Round {interventionRound}</span>
+                        <button
+                            on:click={() => { interventionRound = null; interventionInput = ''; }}
+                            class="text-gray-500 hover:text-gray-300 text-xs"
+                        >✕ cancel</button>
+                    </div>
+
+                    {#if roundAnalyses[interventionRound]?.failures?.filter((f: any) => f.detected).length > 0}
+                        <div>
+                            <p class="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-1">MAST Failures Detected:</p>
+                            <div class="space-y-1">
+                                {#each roundAnalyses[interventionRound].failures.filter((f: any) => f.detected) as failure}
+                                    <div class="flex items-center gap-2 text-xs bg-red-900/30 border border-red-800/40 rounded px-2 py-1">
+                                        <span class="font-black text-red-400">{failure.id}</span>
+                                        <span class="text-red-200">{failure.name}</span>
+                                    </div>
+                                {/each}
+                            </div>
+                        </div>
+                    {:else}
+                        <p class="text-xs text-green-400 italic">No MAST failures in this round.</p>
+                    {/if}
+
+                    <div>
+                        <label class="text-xs text-gray-400 font-semibold uppercase tracking-wide block mb-1">
+                            Your direction for Round {interventionRound}:
+                        </label>
+                        <textarea
+                            bind:value={interventionInput}
+                            class="w-full h-20 bg-gray-800 p-2 border border-gray-600 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 transition resize-none"
+                            placeholder="e.g., Focus on concrete evidence, avoid logical fallacies..."
+                        ></textarea>
+                    </div>
+
+                    <button
+                        on:click={handleRegenerateClick}
+                        disabled={isRegenerating}
+                        class="w-full flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition text-sm"
+                    >
+                        {#if isRegenerating}
+                            <div class="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></div>
+                            Regenerating...
+                        {:else}
+                            ⚡ Regenerate Round {interventionRound}
+                        {/if}
+                    </button>
+                </div>
+            {/if}
         </div>
     </section>
 </div>
@@ -664,6 +820,14 @@
                         <span class="px-2 py-0.5 rounded text-xs font-mono bg-gray-700 text-gray-300">
                             Round {modalData.round}
                         </span>
+                        {#if verticalNodeY[`${modalData.agent}-r${modalData.round}`] !== undefined}
+                            <button
+                                on:click={jumpToThread}
+                                class="text-xs bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded-lg transition"
+                            >
+                                ↓ Jump to Thread
+                            </button>
+                        {/if}
                     </div>
                     <div class="mt-1">
                         {#if modalData.hasFailure}

@@ -7,6 +7,7 @@
     export let agent: AgentConfig;
     export let isRemovable: boolean = false;
     export let disabled: boolean;
+    export let compact: boolean = false;
 
     const dispatch = createEventDispatcher<{
         configChange: { name: AgentName; newConfig: string };
@@ -26,7 +27,7 @@
     }
 </script>
 
-<div class={`p-4 rounded-lg border relative ${ui.border} ${ui.bg}`}>
+<div class={`p-4 rounded-lg border relative h-full ${ui.border} ${ui.bg}`}>
     {#if isRemovable}
         <button
             on:click={handleRemove}
@@ -43,7 +44,7 @@
         value={agent.systemMessage}
         on:input={handleConfigChange}
         {disabled}
-        class="w-full h-48 bg-gray-900/80 text-gray-200 p-2 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200 text-sm"
+        class={`w-full ${compact ? 'h-28' : 'h-48'} bg-gray-900/80 text-gray-200 p-2 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200 text-sm`}
         placeholder={`Enter system message for ${agent.name}`}
     ></textarea>
 </div>

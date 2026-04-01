@@ -68,6 +68,7 @@ def analyze_round_taxonomy(messages: List[Dict]) -> Dict:
         "3.1 Premature Termination: <yes or no>"
         "3.2 No or Incorrect Verification: <yes or no>"
         "3.3 Weak Verification: <yes or no>"
+        "D. For each failure you marked 'yes' above, specify the source agent and round it refers back to using this exact format: <failure_id> refersTo: <AgentName>:<RoundNumber> (use 'none' if not applicable). Example: 2.5 refersTo: Debater_A:1"
         "@@*** end of your answer ***"
         "An example answer is: \n"
         "A. The task is not completed due to disobeying role specification as agents went rogue and started to chat with each other instead of completing the task. Agents derailed and verifier is not strong enough to detect it.\n"
@@ -177,29 +178,48 @@ def parse_mast_text_to_json(text: str) -> Dict:
         }
 
         failures_list = []
-        
+
         # We look for the "C." section explicitly to narrow search range
-        c_section_match = re.search(r"C\.(.*)", cleaned_response, re.DOTALL | re.IGNORECASE)
+        c_section_match = re.search(r"C\.(.*?)(?:D\.|@@)", cleaned_response, re.DOTALL | re.IGNORECASE)
         c_text = c_section_match.group(1) if c_section_match else cleaned_response
 
         for fid, fname in failure_map.items():
             is_detected = False
-            
+
             # Robust Regex from the notebook's logic:
             # Look for the ID (e.g., "1.1") followed eventually by "yes" or "no"
             pattern = rf"{re.escape(fid)}.*?(yes|no)"
             match = re.search(pattern, c_text, re.IGNORECASE)
-            
+
             if match:
                 answer = match.group(1).lower()
                 if "yes" in answer:
                     is_detected = True
-            
+
             failures_list.append({
                 "id": fid,
                 "name": fname,
-                "detected": is_detected
+                "detected": is_detected,
+                "refersTo": None
             })
+
+        # Parse Section D: attach refersTo to detected failures
+        d_section_match = re.search(r"D\.(.*?)(?:@@|$)", cleaned_response, re.DOTALL | re.IGNORECASE)
+        if d_section_match:
+            d_text = d_section_match.group(1)
+            # Match lines like: 2.5 refersTo: Debater_A:1
+            refers_pattern = re.compile(
+                r"(\d+\.\d+)\s+refersTo:\s*([\w_]+):(\d+)",
+                re.IGNORECASE
+            )
+            for ref_match in refers_pattern.finditer(d_text):
+                ref_id = ref_match.group(1)
+                ref_agent = ref_match.group(2)
+                ref_round = int(ref_match.group(3))
+                for failure in failures_list:
+                    if failure["id"] == ref_id and failure["detected"]:
+                        failure["refersTo"] = {"agent": ref_agent, "round": ref_round}
+                        break
 
         result["failures"] = failures_list
 
