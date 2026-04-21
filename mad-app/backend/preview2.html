@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MAST Debate Visualization - Final</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #111827; color: #e5e7eb; font-family: 'Inter', sans-serif; }
+        .canvas-container { background: #1f2937; border-radius: 0.5rem; overflow: hidden; border: 1px solid #374151; }
+        
+        /* Custom Scrollbar */
+        .custom-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+        .custom-scroll::-webkit-scrollbar-track { background: #111827; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+        .custom-scroll::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+
+        /* Smooth transitions */
+        rect, text, circle, line, path { transition: all 0.3s ease; }
+        
+        /* Modal Animation */
+        .modal-enter { opacity: 0; transform: scale(0.95); }
+        .modal-enter-active { opacity: 1; transform: scale(1); transition: opacity 0.2s, transform 0.2s; }
+        .modal-exit { opacity: 0; transform: scale(0.95); transition: opacity 0.2s, transform 0.2s; }
+
+        /* Hover effects */
+        .v-node:hover rect { fill: #374151; }
+
+        /* Drifting Connector Animation */
+        .drift-line { stroke-dasharray: 5; animation: dash 20s linear infinite; }
+        @keyframes dash { from { stroke-dashoffset: 500; } to { stroke-dashoffset: 0; } }
+    </style>
+</head>
+<body class="p-8">
+
+    <div class="max-w-7xl mx-auto space-y-12">
+        
+        <div class="text-center space-y-2">
+            <h1 class="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">
+                Debate Analysis Timeline
+            </h1>
+            <p class="text-gray-400">Interactive visualization of Transcript + MAST Taxonomy Failures</p>
+        </div>
+
+        <section>
+            <h2 class="text-xl font-semibold text-indigo-300 mb-4 flex items-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"></path></svg>
+                View 1: Swimlane Overview (with Logic Drift)
+            </h2>
+            <div class="canvas-container relative overflow-x-auto custom-scroll" id="swimlane-container" style="height: 500px;">
+                <svg id="viz-swimlane" style="min-width: 100%;"></svg>
+            </div>
+            <p class="text-xs text-gray-500 mt-2">* Arrows indicate logical drift (Repetition or Ignored Input) back to source rounds. Scroll horizontally to see all rounds.</p>
+        </section>
+
+        <section>
+            <h2 class="text-xl font-semibold text-indigo-300 mb-4 flex items-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path></svg>
+                View 2: Vertical Thread (Ping-Pong)
+            </h2>
+            <div class="canvas-container h-[800px] overflow-y-auto custom-scroll relative" id="vertical-container">
+                <svg id="viz-vertical" class="w-full"></svg>
+            </div>
+        </section>
+
+    </div>
+
+    <!-- Modal -->
+    <div id="message-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm hidden opacity-0 transition-opacity duration-200">
+        <div class="bg-gray-800 border border-gray-600 rounded-xl shadow-2xl w-full max-w-3xl transform scale-95 transition-transform duration-200 p-6 m-4 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+            
+            <div class="flex justify-between items-start mb-4">
+                <div>
+                    <div class="flex items-center gap-3">
+                        <span id="modal-agent" class="text-2xl font-bold text-white">Debater_A</span>
+                        <span id="modal-round" class="px-2 py-0.5 rounded text-xs font-mono bg-gray-700 text-gray-300">Round 1</span>
+                    </div>
+                    <div id="modal-status" class="mt-1"></div>
+                </div>
+                <button onclick="closeModal()" class="text-gray-400 hover:text-white transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+
+            <div class="bg-gray-900/50 rounded-lg p-4 mb-6 max-h-80 overflow-y-auto border border-gray-700">
+                <p id="modal-content" class="text-gray-300 leading-relaxed whitespace-pre-wrap font-serif text-base"></p>
+            </div>
+
+            <div class="border-t border-gray-700 pt-4">
+                <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">MAST Analysis (Round Level)</h3>
+                <div id="modal-analysis" class="space-y-2"></div>
+                <p id="modal-summary" class="text-sm text-gray-500 mt-3 italic"></p>
+            </div>
+
+        </div>
+        <div class="absolute inset-0 -z-10" onclick="closeModal()"></div>
+    </div>
+
+    <script>
+        // --- DATA ---
+        const DATA = {
+  "metadata": {
+    "topic": "AI will benefit society more than it will harm it.",
+    "total_rounds": 5,
+    "winner": "Debater_B"
+  },
+  "transcript": [
+    { "round": 1, "agent": "Debater_A", "content": "Absolutely, AI will benefit society more than it will harm it, and let me tell you why.\n\nFirst of all, AI can dramatically enhance productivity across various sectors. Take healthcare, for example. AI algorithms can analyze medical data far more efficiently than humans, leading to quicker diagnoses and more personalized treatment plans." },
+    { "round": 1, "agent": "Debater_B", "content": "While my opponent makes some valid points about the potential benefits of AI, I firmly believe that the risks and harms associated with AI far outweigh the positives, especially if we consider the current trajectory of its development.\n\nFirst, let's tackle the issue of job displacement." },
+    { "round": 1, "agent": "Judge", "content": "Both debaters presented compelling arguments, but Debater_A focused predominantly on the benefits of AI without adequately addressing the serious concerns raised about job displacement, biases in AI systems, and ethical implications.\n\nRound Winner: Debater_B" },
+    { "round": 2, "agent": "Debater_A", "content": "Thank you, Moderator. I appreciate the opportunity to continue this discussion. While my opponent has raised important concerns, I want to clarify that the benefits of AI can be harnessed while addressing those issues head-on.\n\nFirst, regarding job displacement: I completely acknowledge that automation will disrupt certain jobs." },
+    { "round": 2, "agent": "Debater_B", "content": "I appreciate that Debater_A is now acknowledging job displacement, but I have to point out that their solution is somewhat idealistic. Reskilling programs sound great in theory, but the reality is that many workers don't have the time, resources, or access to quality training." },
+    { "round": 2, "agent": "Judge", "content": "Debater_A brought up important points about reskilling and addressing biases, showing an awareness of the challenges. However, Debater_B effectively highlighted the practical limitations of these solutions.\n\nRound Winner: Debater_B" },
+    { "round": 3, "agent": "Debater_A", "content": "I understand the concerns raised, but I want to shift focus to another critical area where AI is already making a tangible difference: climate change mitigation. AI is being used to optimize renewable energy grids, predict natural disasters with greater accuracy, and even develop new materials for carbon capture." },
+    { "round": 3, "agent": "Debater_B", "content": "While climate applications sound promising, we can't ignore the massive carbon footprint of training large AI models. Some studies show that training a single large language model can produce as much carbon as five cars over their entire lifetimes." },
+    { "round": 3, "agent": "Judge", "content": "Both debaters made valid points. Debater_A highlighted concrete applications of AI in climate and education, while Debater_B raised important counterpoints about AI's environmental cost.\n\nRound Winner: Debater_B" },
+    { "round": 4, "agent": "Debater_A", "content": "I want to address the environmental concern directly. Yes, training large models does consume energy, but ongoing research is dramatically reducing this footprint. New techniques like model pruning, efficient architectures, and using renewable energy for data centers are making AI increasingly sustainable." },
+    { "round": 4, "agent": "Debater_B", "content": "The promises about energy efficiency improvements are still largely in the research phase and not yet implemented at scale. Meanwhile, AI deployment is accelerating faster than these solutions can catch up." },
+    { "round": 4, "agent": "Judge", "content": "Debater_A presented optimistic views about future improvements and medical applications, but Debater_B effectively challenged the timeline and reliability of these benefits.\n\nRound Winner: Debater_B" },
+    { "round": 5, "agent": "Debater_A", "content": "I want to bring this back to a fundamental point: throughout history, societies that embrace technological innovation while implementing proper safeguards have thrived. The printing press, electricity, the internet—all faced similar concerns about disruption and harm, yet they fundamentally improved human welfare." },
+    { "round": 5, "agent": "Debater_B", "content": "The historical comparison is flawed because AI is fundamentally different. Previous technologies were tools that humans controlled; AI systems can make autonomous decisions with consequences we may not fully understand or be able to reverse." },
+    { "round": 5, "agent": "Judge", "content": "This final round showcased the core philosophical difference between the debaters. Debater_A made a compelling historical argument about technological progress, while Debater_B effectively distinguished AI from previous technologies.\n\nRound Winner: Debater_B" }
+  ],
+  "mast_results": {
+    "1": { "summary": "Round 1 showed strong initial arguments from both sides with no major logical failures.", "failures": [] },
+    "2": { 
+      "summary": "Debater A acknowledged opponent's concerns but failed to fully engage with the structural critique raised by Debater B.", 
+      "failures": [
+        { "id": "2.5", "name": "Ignored Other Agent's Input", "detected": true, "refersTo": 4 }
+      ] 
+    },
+    "3": { "summary": "Both debaters stayed on topic and engaged with each other's points effectively.", "failures": [] },
+    "4": { 
+      "summary": "Debater A repeated optimistic claims about future AI improvements without addressing Debater B's timeline critique.", 
+      "failures": [
+        { "id": "1.3", "name": "Step Repetition", "detected": true, "refersTo": 6 }
+      ] 
+    },
+    "5": { "summary": "Final round featured philosophical arguments with strong engagement from both sides.", "failures": [] }
+  }
+};
+
+        const ROUND_KEYWORDS = {
+            1: ["healthcare efficiency", "job displacement", "climate change", "automation risks", "economic impact"],
+            2: ["reskilling programs", "training accessibility", "systemic bias", "structural inequality", "workforce transition"],
+            3: ["renewable energy", "carbon footprint", "AI in education", "environmental cost", "personalized learning"],
+            4: ["sustainability research", "medical applications", "diagnostic failures", "dataset bias", "implementation timeline"],
+            5: ["historical precedent", "autonomous systems", "governance frameworks", "ethical regulation", "societal experiment"]
+        };
+
+        const COLORS = {
+            "Debater_A": "#6366f1",
+            "Debater_B": "#10b981",
+            "Judge": "#f59e0b",
+            "Human_Moderator": "#6b7280",
+            "Failure": "#ef4444"
+        };
+
+        // Merge data and add Human Moderator boxes
+        const MERGED_DATA = [];
+        
+        DATA.transcript.forEach((msg, index) => {
+            const roundAnalysis = DATA.mast_results[msg.round] || { failures: [], summary: "No issues detected." };
+            const hasFailure = roundAnalysis.failures.some(f => f.detected);
+            let summary = msg.content.split(/[.!?]/)[0] + ".";
+            if (summary.length > 100) summary = summary.substring(0, 97) + "...";
+            
+            MERGED_DATA.push({
+                ...msg,
+                index: MERGED_DATA.length,
+                analysis: roundAnalysis,
+                hasFailure: hasFailure,
+                shortSummary: summary
+            });
+        });
+        
+        // Insert Human Moderator boxes at the start of each round (except round 1)
+        const rounds = [...new Set(MERGED_DATA.map(d => d.round))].sort((a, b) => a - b);
+        rounds.forEach((round, roundIdx) => {
+            if (roundIdx > 0) {
+                // Find the index where this round starts
+                const roundStartIdx = MERGED_DATA.findIndex(d => d.round === round);
+                
+                // Insert Human Moderator box
+                MERGED_DATA.splice(roundStartIdx, 0, {
+                    round: round,
+                    agent: "Human_Moderator",
+                    content: `Round ${round} directive: Continue the debate with focus on addressing previous points.`,
+                    index: roundStartIdx,
+                    analysis: { failures: [], summary: "Moderation guidance." },
+                    hasFailure: false,
+                    shortSummary: `Round ${round} directive: Continue the debate with focus on addressing previous points.`
+                });
+                
+                // Re-index everything after insertion
+                for (let i = roundStartIdx + 1; i < MERGED_DATA.length; i++) {
+                    MERGED_DATA[i].index = i;
+                }
+            }
+        });
+
+        // --- SWIMLANE RENDERING ---
+        function renderSwimlane() {
+            const container = document.getElementById('swimlane-container');
+            const svg = d3.select("#viz-swimlane");
+            svg.selectAll("*").remove();
+
+            const margin = { top: 40, right: 60, bottom: 140, left: 120 };
+            const laneHeight = 90; // Increased from 70 for more separation
+            const agents = ["Debater_A", "Debater_B", "Judge"];
+            const swimlaneHeight = 500;
+            
+            const rounds = [...new Set(MERGED_DATA.map(d => d.round))].sort((a, b) => a - b);
+            const boxWidth = 220;
+            const boxSpacing = 50;
+            const staggerOffset = 80; // Horizontal offset for staggering boxes
+            const totalWidth = Math.max(1400, rounds.length * (boxWidth + boxSpacing + staggerOffset * 2) + margin.left + margin.right);
+            
+            svg.attr("width", totalWidth).attr("height", swimlaneHeight);
+
+            // Arrow marker
+            svg.append("defs").append("marker")
+                .attr("id", "arrowhead-swimlane")
+                .attr("viewBox", "0 0 10 10")
+                .attr("refX", "8")
+                .attr("refY", "5")
+                .attr("markerWidth", "5")
+                .attr("markerHeight", "5")
+                .attr("orient", "auto")
+                .append("path")
+                .attr("d", "M 0 0 L 10 5 L 0 10 z")
+                .attr("fill", COLORS.Failure);
+
+            const yScale = d3.scaleBand()
+                .domain(agents)
+                .range([margin.top, agents.length * laneHeight + margin.top])
+                .padding(0.2);
+
+            // Lane labels
+            svg.selectAll(".lane-label")
+                .data(agents)
+                .join("text")
+                .attr("x", margin.left - 15)
+                .attr("y", d => yScale(d) + yScale.bandwidth() / 2)
+                .attr("dy", "0.35em")
+                .attr("text-anchor", "end")
+                .attr("fill", "#9CA3AF")
+                .attr("font-size", "13px")
+                .attr("font-weight", "700")
+                .text(d => d.replace('_', ' '));
+
+            // Lane backgrounds
+            svg.selectAll(".lane-bg")
+                .data(agents)
+                .join("rect")
+                .attr("x", margin.left)
+                .attr("y", d => yScale(d))
+                .attr("width", totalWidth - margin.left - margin.right)
+                .attr("height", yScale.bandwidth())
+                .attr("fill", "#1f2937")
+                .attr("stroke", "#374151")
+                .attr("stroke-width", 1)
+                .attr("rx", 4);
+
+            // Create boxes (exclude Human_Moderator)
+            const boxes = svg.selectAll(".swimlane-box")
+                .data(MERGED_DATA.filter(d => d.agent !== "Human_Moderator"))
+                .join("g")
+                .attr("class", "swimlane-box cursor-pointer")
+                .on("click", (e, d) => openModal(d));
+
+            boxes.each(function(d) {
+                const g = d3.select(this);
+                const roundIndex = rounds.indexOf(d.round);
+                
+                // Calculate stagger based on agent position
+                let agentStagger = 0;
+                if (d.agent === "Debater_B") agentStagger = staggerOffset;
+                else if (d.agent === "Judge") agentStagger = staggerOffset * 2;
+                
+                const x = margin.left + roundIndex * (boxWidth + boxSpacing + staggerOffset * 2) + 15 + agentStagger;
+                const y = yScale(d.agent) + (yScale.bandwidth() - 64) / 2;
+
+                // Box
+                g.append("rect")
+                    .attr("x", x)
+                    .attr("y", y)
+                    .attr("width", boxWidth)
+                    .attr("height", 64)
+                    .attr("rx", 8)
+                    .attr("fill", "#1f2937")
+                    .attr("stroke", d.hasFailure ? COLORS.Failure : COLORS[d.agent])
+                    .attr("stroke-width", d.hasFailure ? 3 : 2);
+
+                // Color stripe
+                g.append("rect")
+                    .attr("x", x)
+                    .attr("y", y)
+                    .attr("width", boxWidth)
+                    .attr("height", 5)
+                    .attr("rx", 8)
+                    .attr("fill", COLORS[d.agent])
+                    .attr("opacity", 0.9);
+
+                // Round badge
+                g.append("text")
+                    .text(`R${d.round}`)
+                    .attr("x", x + boxWidth - 8)
+                    .attr("y", y + 16)
+                    .attr("text-anchor", "end")
+                    .attr("font-size", "10px")
+                    .attr("font-weight", "bold")
+                    .attr("fill", "#6b7280");
+
+                // Argument summary with word wrapping
+                const words = d.shortSummary.split(' ');
+                let line = '';
+                let lineNum = 0;
+                const lineHeight = 12;
+                const maxWidth = boxWidth - 16;
+
+                const tempText = svg.append("text")
+                    .attr("font-size", "11px")
+                    .style("visibility", "hidden");
+
+                words.forEach((word, idx) => {
+                    const testLine = line + word + ' ';
+                    tempText.text(testLine);
+                    const testWidth = tempText.node().getComputedTextLength();
+                    
+                    if (testWidth > maxWidth && idx > 0) {
+                        g.append("text")
+                            .text(line.trim())
+                            .attr("x", x + 8)
+                            .attr("y", y + 18 + lineNum * lineHeight)
+                            .attr("font-size", "11px")
+                            .attr("fill", "#d1d5db")
+                            .attr("font-style", "italic")
+                            .style("font-family", "serif");
+                        line = word + ' ';
+                        lineNum++;
+                    } else {
+                        line = testLine;
+                    }
+                    
+                    if (lineNum >= 3) return;
+                });
+
+                if (lineNum < 3 && line.trim()) {
+                    g.append("text")
+                        .text(line.trim())
+                        .attr("x", x + 8)
+                        .attr("y", y + 18 + lineNum * lineHeight)
+                        .attr("font-size", "11px")
+                        .attr("fill", "#d1d5db")
+                        .attr("font-style", "italic")
+                        .style("font-family", "serif");
+                }
+
+                tempText.remove();
+
+                // Failure indicator
+                if (d.hasFailure) {
+                    g.append("circle")
+                        .attr("cx", x + 8)
+                        .attr("cy", y + 10)
+                        .attr("r", 4)
+                        .attr("fill", COLORS.Failure);
+                }
+
+                // Store position for drift lines
+                d._swimX = x + boxWidth / 2;
+                d._swimY = y + 32;
+            });
+
+            // Draw drift connectors
+            MERGED_DATA.forEach(d => {
+                const failure = d.analysis.failures.find(f => f.detected && f.refersTo !== undefined);
+                if (failure) {
+                    const sourceData = MERGED_DATA[failure.refersTo];
+                    if (!sourceData) return;
+
+                    const isBackward = d.round > sourceData.round;
+                    
+                    if (isBackward) {
+                        const controlY = Math.min(d._swimY, sourceData._swimY) - 60;
+                        const pathData = `M ${d._swimX} ${d._swimY} C ${d._swimX} ${controlY}, ${sourceData._swimX} ${controlY}, ${sourceData._swimX} ${sourceData._swimY}`;
+                        
+                        svg.append("path")
+                            .attr("d", pathData)
+                            .attr("fill", "none")
+                            .attr("stroke", COLORS.Failure)
+                            .attr("stroke-width", 2.5)
+                            .attr("class", "drift-line")
+                            .attr("opacity", 0.7)
+                            .attr("marker-end", "url(#arrowhead-swimlane)");
+                    } else {
+                        const midX = (d._swimX + sourceData._swimX) / 2;
+                        const pathData = `M ${d._swimX} ${d._swimY} C ${midX} ${d._swimY}, ${midX} ${sourceData._swimY}, ${sourceData._swimX} ${sourceData._swimY}`;
+                        
+                        svg.append("path")
+                            .attr("d", pathData)
+                            .attr("fill", "none")
+                            .attr("stroke", COLORS.Failure)
+                            .attr("stroke-width", 2.5)
+                            .attr("class", "drift-line")
+                            .attr("opacity", 0.7)
+                            .attr("marker-end", "url(#arrowhead-swimlane)");
+                    }
+                }
+            });
+
+            // Keyword sections
+            const keywordY = agents.length * laneHeight + margin.top + 20;
+            rounds.forEach((round, roundIndex) => {
+                const x = margin.left + roundIndex * (boxWidth + boxSpacing + staggerOffset * 2) + 15;
+                const keywords = ROUND_KEYWORDS[round] || [];
+
+                const keywordGroup = svg.append("g");
+
+                keywordGroup.append("rect")
+                    .attr("x", x)
+                    .attr("y", keywordY)
+                    .attr("width", boxWidth + staggerOffset * 2) // Span entire staggered width
+                    .attr("height", 100)
+                    .attr("rx", 8)
+                    .attr("fill", "#111827")
+                    .attr("stroke", "#374151")
+                    .attr("stroke-width", 1);
+
+                keywordGroup.append("text")
+                    .text("KEY TOPICS:")
+                    .attr("x", x + 10)
+                    .attr("y", keywordY + 18)
+                    .attr("font-size", "9px")
+                    .attr("font-weight", "bold")
+                    .attr("fill", "#6b7280");
+
+                keywords.forEach((keyword, i) => {
+                    // Create text to measure width
+                    const tempText = svg.append("text")
+                        .text(keyword)
+                        .attr("font-size", "9px")
+                        .style("visibility", "hidden");
+                    
+                    const textWidth = tempText.node().getComputedTextLength();
+                    tempText.remove();
+                    
+                    // Calculate position with wrapping
+                    const bubblePadding = 12;
+                    const bubbleWidth = textWidth + bubblePadding;
+                    const bubbleHeight = 16;
+                    const bubbleSpacing = 6;
+                    const maxRowWidth = boxWidth + staggerOffset * 2 - 20;
+                    
+                    let currentX = x + 10;
+                    let currentY = keywordY + 30;
+                    let rowWidth = 0;
+                    
+                    // Calculate position based on previous keywords
+                    for (let j = 0; j < i; j++) {
+                        const prevText = svg.append("text")
+                            .text(keywords[j])
+                            .attr("font-size", "9px")
+                            .style("visibility", "hidden");
+                        const prevWidth = prevText.node().getComputedTextLength() + bubblePadding;
+                        prevText.remove();
+                        
+                        if (rowWidth + prevWidth + bubbleSpacing > maxRowWidth) {
+                            currentY += bubbleHeight + 4;
+                            rowWidth = 0;
+                        }
+                        
+                        rowWidth += prevWidth + bubbleSpacing;
+                    }
+                    
+                    // Check if current keyword fits in row
+                    if (rowWidth + bubbleWidth > maxRowWidth && rowWidth > 0) {
+                        currentY += bubbleHeight + 4;
+                        rowWidth = 0;
+                    }
+                    
+                    currentX = x + 10 + rowWidth;
+
+                    // Draw bubble
+                    keywordGroup.append("rect")
+                        .attr("x", currentX)
+                        .attr("y", currentY)
+                        .attr("width", bubbleWidth)
+                        .attr("height", bubbleHeight)
+                        .attr("rx", 8)
+                        .attr("fill", "#1f2937")
+                        .attr("stroke", "#374151")
+                        .attr("stroke-width", 1);
+
+                    // Draw text
+                    keywordGroup.append("text")
+                        .text(keyword)
+                        .attr("x", currentX + bubblePadding / 2)
+                        .attr("y", currentY + 11)
+                        .attr("font-size", "9px")
+                        .attr("fill", "#9ca3af");
+                });
+            });
+        }
+
+        // --- VERTICAL TIMELINE ---
+        function renderVertical() {
+            const container = document.getElementById('vertical-container');
+            const width = container.clientWidth;
+            if (width === 0) return;
+
+            const nodeHeight = 150;
+            const gap = 40;
+            const roundSeparatorHeight = 80;
+            
+            // Group data by rounds
+            const rounds = [...new Set(MERGED_DATA.map(d => d.round))].sort((a, b) => a - b);
+            const dataByRound = rounds.map(round => ({
+                round: round,
+                messages: MERGED_DATA.filter(d => d.round === round)
+            }));
+            
+            // Calculate total height with round separators
+            const totalHeight = dataByRound.reduce((sum, roundData) => {
+                return sum + roundData.messages.length * (nodeHeight + gap) + roundSeparatorHeight;
+            }, 100);
+
+            const svg = d3.select("#viz-vertical").attr("height", totalHeight);
+            svg.selectAll("*").remove();
+
+            const centerX = width / 2;
+
+            // Central spine
+            svg.append("line")
+                .attr("x1", centerX).attr("y1", 20)
+                .attr("x2", centerX).attr("y2", totalHeight - 20)
+                .attr("stroke", "#374151")
+                .attr("stroke-width", 2)
+                .attr("stroke-dasharray", "8 8");
+
+            // Arrow marker
+            svg.append("defs").append("marker")
+                .attr("id", "arrowhead-vertical")
+                .attr("viewBox", "0 0 10 10")
+                .attr("refX", "5")
+                .attr("refY", "5")
+                .attr("markerWidth", "4")
+                .attr("markerHeight", "4")
+                .attr("orient", "auto")
+                .append("path")
+                .attr("d", "M 0 0 L 10 5 L 0 10 z")
+                .attr("fill", COLORS.Failure);
+
+            let currentY = 60;
+            
+            // Render each round
+            dataByRound.forEach((roundData, roundIndex) => {
+                // Round separator line (before rounds 2+)
+                if (roundIndex > 0) {
+                    svg.append("line")
+                        .attr("x1", centerX - 400)
+                        .attr("y1", currentY - 40)
+                        .attr("x2", centerX + 400)
+                        .attr("y2", currentY - 40)
+                        .attr("stroke", "#4b5563")
+                        .attr("stroke-width", 2)
+                        .attr("stroke-dasharray", "10 5");
+                    
+                    // Round label
+                    svg.append("text")
+                        .text(`ROUND ${roundData.round}`)
+                        .attr("x", centerX)
+                        .attr("y", currentY - 15)
+                        .attr("text-anchor", "middle")
+                        .attr("font-size", "12px")
+                        .attr("font-weight", "bold")
+                        .attr("fill", "#6b7280");
+                }
+                
+                currentY += roundSeparatorHeight;
+                
+                // Render messages with strict left-right alternation
+                roundData.messages.forEach((d, msgIndex) => {
+                    const g = svg.append("g")
+                        .attr("class", "v-node cursor-pointer")
+                        .on("click", () => openModal(d));
+                    
+                    // Strict alternation: 0=left, 1=right, 2=left, 3=right
+                    const isLeft = msgIndex % 2 === 0;
+                    const xOffset = isLeft ? centerX - 380 : centerX + 40;
+                    
+                    g.attr("transform", `translate(${xOffset}, ${currentY})`);
+
+                    // Card background
+                    g.append("rect")
+                        .attr("width", 340)
+                        .attr("height", nodeHeight)
+                        .attr("rx", 12)
+                        .attr("fill", "#1F2937")
+                        .attr("stroke", d.hasFailure ? COLORS.Failure : "#374151")
+                        .attr("stroke-width", d.hasFailure ? 3 : 1);
+
+                    // Color stripe
+                    g.append("rect")
+                        .attr("width", 340)
+                        .attr("height", 8)
+                        .attr("rx", 4)
+                        .attr("fill", COLORS[d.agent])
+                        .attr("opacity", 0.8);
+
+                    // Agent name
+                    g.append("text")
+                        .text(d.agent.replace('_', ' '))
+                        .attr("x", 16).attr("y", 30)
+                        .attr("font-size", "12px")
+                        .attr("font-weight", "900")
+                        .attr("fill", COLORS[d.agent])
+                        .style("text-transform", "uppercase");
+
+                    // Round badge
+                    g.append("text")
+                        .text(`Round ${d.round}`)
+                        .attr("x", 324).attr("y", 30)
+                        .attr("text-anchor", "end")
+                        .attr("font-size", "11px")
+                        .attr("fill", "#6B7280");
+
+                    // Preview label
+                    g.append("text")
+                        .text(d.agent === "Human_Moderator" ? "DIRECTIVE:" : "ARGUMENT PREVIEW:")
+                        .attr("x", 16).attr("y", 55)
+                        .attr("font-size", "10px")
+                        .attr("font-weight", "bold")
+                        .attr("fill", "#4B5563");
+
+                    // Preview text
+                    g.append("foreignObject")
+                        .attr("x", 16).attr("y", 65)
+                        .attr("width", 308).attr("height", 60)
+                        .append("xhtml:div")
+                        .attr("class", "text-sm text-gray-300 leading-relaxed font-serif italic")
+                        .html(`"${d.shortSummary}"`);
+
+                    // Failure banner (only for non-moderation messages)
+                    if (d.hasFailure && d.agent !== "Human_Moderator") {
+                        g.append("rect")
+                            .attr("y", 125)
+                            .attr("x", 16)
+                            .attr("width", 308)
+                            .attr("height", 24)
+                            .attr("rx", 4)
+                            .attr("fill", "#7F1D1D");
+
+                        g.append("text")
+                            .text("⚠ MAST FAILURE DETECTED")
+                            .attr("x", 170)
+                            .attr("y", 141)
+                            .attr("text-anchor", "middle")
+                            .attr("fill", "#FCA5A5")
+                            .attr("font-size", "10px")
+                            .attr("font-weight", "900");
+                    }
+
+                    // Store position for drift lines
+                    d._verticalY = currentY + nodeHeight / 2;
+                    d._verticalX = isLeft ? centerX - 40 : centerX + 40;
+                    
+                    // Center dot
+                    svg.append("circle")
+                        .attr("cx", centerX)
+                        .attr("cy", currentY + nodeHeight / 2)
+                        .attr("r", 6)
+                        .attr("fill", "#111827")
+                        .attr("stroke", d.hasFailure ? COLORS.Failure : "#374151")
+                        .attr("stroke-width", 3);
+                    
+                    currentY += nodeHeight + gap;
+                });
+            });
+
+            // Draw drift connectors
+            MERGED_DATA.forEach(d => {
+                const failure = d.analysis.failures.find(f => f.detected && f.refersTo !== undefined);
+                if (failure) {
+                    const sourceData = MERGED_DATA[failure.refersTo];
+                    if (!sourceData || !d._verticalY || !sourceData._verticalY) return;
+
+                    const pathData = `M ${d._verticalX} ${d._verticalY} C ${centerX} ${d._verticalY}, ${centerX} ${sourceData._verticalY}, ${sourceData._verticalX} ${sourceData._verticalY}`;
+
+                    svg.append("path")
+                        .attr("d", pathData)
+                        .attr("fill", "none")
+                        .attr("stroke", COLORS.Failure)
+                        .attr("stroke-width", 3)
+                        .attr("class", "drift-line")
+                        .attr("opacity", 0.5)
+                        .attr("marker-end", "url(#arrowhead-vertical)");
+                }
+            });
+        }
+
+        // --- MODAL ---
+        function openModal(data) {
+            const modal = document.getElementById('message-modal');
+            document.getElementById('modal-agent').textContent = data.agent.replace('_', ' ');
+            document.getElementById('modal-agent').style.color = COLORS[data.agent];
+            document.getElementById('modal-round').textContent = `Round ${data.round}`;
+            document.getElementById('modal-content').textContent = data.content;
+
+            const statusDiv = document.getElementById('modal-status');
+            statusDiv.innerHTML = data.hasFailure ?
+                `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-900/50 text-red-300 border border-red-700 uppercase tracking-wide">⚠ Taxonomy Issues</span>` :
+                `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-green-900/50 text-green-300 border border-green-700 uppercase tracking-wide">✓ Verified Healthy</span>`;
+
+            const analysisContainer = document.getElementById('modal-analysis');
+            analysisContainer.innerHTML = '';
+            data.analysis.failures.filter(f => f.detected).forEach(f => {
+                const div = document.createElement('div');
+                div.className = "flex items-center gap-3 p-3 bg-red-900/20 border border-red-800/50 rounded-lg";
+                div.innerHTML = `<span class="font-black text-red-400 text-lg">${f.id}</span><span class="text-red-100 font-medium text-sm">${f.name}</span>`;
+                analysisContainer.appendChild(div);
+            });
+            if (analysisContainer.innerHTML === '') {
+                analysisContainer.innerHTML = `<div class="text-gray-500 text-sm italic">Compliance check passed.</div>`;
+            }
+
+            document.getElementById('modal-summary').textContent = data.analysis.summary;
+
+            modal.classList.remove('hidden');
+            setTimeout(() => {
+                modal.classList.remove('opacity-0');
+                modal.querySelector('div').classList.remove('scale-95');
+                modal.querySelector('div').classList.add('scale-100');
+            }, 10);
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('message-modal');
+            modal.classList.add('opacity-0');
+            modal.querySelector('div').classList.remove('scale-100');
+            modal.querySelector('div').classList.add('scale-95');
+            setTimeout(() => { modal.classList.add('hidden'); }, 200);
+        }
+
+        // Initialize
+        renderSwimlane();
+        renderVertical();
+
+        const swimlaneObs = new ResizeObserver(() => renderSwimlane());
+        const verticalObs = new ResizeObserver(() => renderVertical());
+        swimlaneObs.observe(document.getElementById('swimlane-container'));
+        verticalObs.observe(document.getElementById('vertical-container'));
+
+    </script>
+</body>
+</html>

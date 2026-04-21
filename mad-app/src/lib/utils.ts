@@ -4,11 +4,11 @@ import type { AgentName } from './types.js';
 const DEBATER_COLORS = [
     // Renamed 'name' to 'colorName' to avoid collision when spreading
     { colorName: 'Blue', bg: 'bg-blue-900/50', border: 'border-blue-500', text: 'text-blue-300', bubble: 'bg-blue-800/60', icon: 'text-blue-400' },
-    { colorName: 'Red', bg: 'bg-red-900/50', border: 'border-red-500', text: 'text-red-300', bubble: 'bg-red-800/60', icon: 'text-red-400' },
     { colorName: 'Green', bg: 'bg-green-900/50', border: 'border-green-500', text: 'text-green-300', bubble: 'bg-green-800/60', icon: 'text-green-400' },
     { colorName: 'Purple', bg: 'bg-purple-900/50', border: 'border-purple-500', text: 'text-purple-300', bubble: 'bg-purple-800/60', icon: 'text-purple-400' },
     { colorName: 'Pink', bg: 'bg-pink-900/50', border: 'border-pink-500', text: 'text-pink-300', bubble: 'bg-pink-800/60', icon: 'text-pink-400' },
     { colorName: 'Teal', bg: 'bg-teal-900/50', border: 'border-teal-500', text: 'text-teal-300', bubble: 'bg-teal-800/60', icon: 'text-teal-400' },
+    { colorName: 'Orange', bg: 'bg-orange-900/50', border: 'border-orange-500', text: 'text-orange-300', bubble: 'bg-orange-800/60', icon: 'text-orange-400' },
 ];
 
 export const getAgentUI = (name: AgentName) => {

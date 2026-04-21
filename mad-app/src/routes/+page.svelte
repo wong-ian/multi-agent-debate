@@ -1,13 +1,18 @@
 <script lang="ts">
+    import { tick } from 'svelte';
     import type { AgentConfig, AgentName, DebateStatus, Message } from '$lib/types.ts';
-    import { startDebateSession, continueDebateSession, analyzeDebate } from '$lib/services/apiService.ts';
+    // IMPORTS: Added saveDebate for data persistence
+    import { startDebateSession, continueDebateSession, analyzeDebate, saveDebate, regenerateRound } from '$lib/services/apiService.ts';
     import type { AnalysisResult } from '$lib/types.ts';
-    
+
     // Components
     import AgentConfigurator from '$lib/components/AgentConfigurator.svelte';
-    import DebateTranscript from '$lib/components/DebateTranscript.svelte';
-    import Scoreboard from '$lib/components/Scoreboard.svelte';
     import DebateAnalysis from '$lib/components/DebateAnalysis.svelte';
+    import DebateVisualization from '$lib/components/DebateVisualization.svelte';
+
+    // NLP service for per-round keyword extraction
+    import { analyzeDebate as nlpAnalyze } from '$lib/services/nlpService.ts';
+    import type { Keyword } from '$lib/types.ts';
 
     // Icons
     import PlayIcon from '$lib/components/icons/PlayIcon.svelte';
@@ -40,7 +45,7 @@ Your response MUST end with one of these exact phrases:`;
     // --- STATE ---
     let topic = 'AI will benefit society more than it will harm it.';
     let agents: AgentConfig[] = JSON.parse(JSON.stringify(INITIAL_AGENTS));
-    
+
     // Live State
     let messages: Message[] = [];
     let sessionId: string | null = null;
@@ -52,31 +57,22 @@ Your response MUST end with one of these exact phrases:`;
     let analysisResult: AnalysisResult | null = null;
     let nextSpeaker: AgentName | undefined = undefined;
 
-    // --- NEW: MAST ANALYSIS STATE ---
+    // --- MAST ANALYSIS STATE ---
     let roundAnalyses: Record<number, any> = {};
+
+    // --- PER-ROUND KEYWORD STATE ---
+    let roundKeywords: Record<number, Keyword[]> = {};
+
+    // --- HUMAN MODERATOR INTERVENTION STATE ---
+    let regeneratedRounds: Record<number, { mastFailures: string[]; humanInput: string }> = {};
 
     // --- DERIVED STATE ---
     $: debaters = agents.filter(a => a.name.startsWith('Debater_'));
-    $: isLoading = status === 'running'; 
+    $: isLoading = status === 'running';
     $: isIdle = status === 'idle';
     $: isPaused = status === 'paused';
 
     // --- HELPER FUNCTIONS ---
-    
-    const triggerMastAnalysis = async (roundNum: number, roundMsgs: Message[]) => {
-        try {
-            const res = await fetch('http://localhost:8000/api/mast-analyze', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: roundMsgs })
-            });
-            const result = await res.json();
-            // Assign to new object to trigger Svelte reactivity
-            roundAnalyses = { ...roundAnalyses, [roundNum]: result };
-        } catch (e) {
-            console.error("Shadow Judge analysis failed:", e);
-        }
-    };
 
     const updateJudgeSystemMessage = (currentAgents: AgentConfig[]) => {
         const currentDebaters = currentAgents.filter(a => a.name.startsWith('Debater_'));
@@ -120,7 +116,9 @@ Your response MUST end with one of these exact phrases:`;
         error = null;
         analysisResult = null;
         nextSpeaker = undefined;
-        roundAnalyses = {}; // Reset MAST data
+        roundAnalyses = {};
+        roundKeywords = {};
+        regeneratedRounds = {};
     };
 
     const calculateWinner = () => {
@@ -137,47 +135,143 @@ Your response MUST end with one of these exact phrases:`;
         }
     };
 
+    const recalculateScores = () => {
+        const newScores: Record<string, number> = {};
+        debaters.forEach(d => { newScores[d.name] = 0; });
+        messages.forEach(msg => {
+            if (msg.agent === 'Judge') {
+                const match = msg.content.match(/Round Winner: (Debater_[A-Z])/i);
+                if (match && newScores[match[1]] !== undefined) {
+                    newScores[match[1]] += 1;
+                }
+            }
+        });
+        scores = newScores;
+    };
+
+    const handleIntervene = async (roundNumber: number, mastFailures: string[], humanInput: string) => {
+        if (!sessionId) return;
+        error = null;
+
+        const roundToReplace = roundNumber;
+
+        try {
+            const result = await regenerateRound(sessionId, roundToReplace, mastFailures, humanInput);
+
+            // Replace round messages — keep everything except the replaced round
+            const kept = messages.filter(m => m.round !== roundToReplace);
+            messages = [...kept, ...result.messages];
+
+            // Track for memory cell visualization
+            regeneratedRounds = {
+                ...regeneratedRounds,
+                [roundToReplace]: { mastFailures, humanInput }
+            };
+
+            // Clear stale analysis/keywords for this round
+            const { [roundToReplace]: _ra, ...restAnalyses } = roundAnalyses;
+            roundAnalyses = restAnalyses;
+            const { [roundToReplace]: _rk, ...restKeywords } = roundKeywords;
+            roundKeywords = restKeywords;
+
+            // Recalculate scores from full transcript
+            recalculateScores();
+
+            // Re-run MAST analysis on updated messages
+            try {
+                const res = await fetch('http://localhost:8000/api/analyze-taxonomy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages })
+                });
+                if (res.ok) {
+                    const mastResult = await res.json();
+                    roundAnalyses = { ...roundAnalyses, [roundToReplace]: mastResult };
+                }
+            } catch { /* non-fatal */ }
+
+            // Re-run NLP keywords for this round
+            const nlpResult = nlpAnalyze(messages, debaters.map(d => d.name));
+            if (nlpResult) {
+                const roundData = nlpResult.timeline.find(t => t.round === roundToReplace);
+                if (roundData) {
+                    const all = Object.values(roundData.keywordsByDebater)
+                        .flat()
+                        .sort((a: any, b: any) => b.score - a.score);
+                    const seen = new Set<string>();
+                    const top5 = (all as any[]).filter((k: any) => !seen.has(k.term) && seen.add(k.term)).slice(0, 5);
+                    roundKeywords = { ...roundKeywords, [roundToReplace]: top5 };
+                }
+            }
+        } catch (e: any) {
+            error = `Regeneration failed: ${e.message}`;
+        }
+    };
+
+    const handleRegenerateFromViz = async (e: CustomEvent) => {
+        const { roundNumber, mastFailures, humanInput } = e.detail;
+        await handleIntervene(roundNumber, mastFailures, humanInput);
+    };
+
+    // --- CORE LOGIC ---
+
+    // Handles typing effects AND triggers MAST analysis per round
     const processNewMessages = async (newMsgs: Message[]) => {
         // 1. Visually type out each message in the round
         for (const msg of newMsgs) {
-            nextSpeaker = msg.agent; // Update visual loader [cite: 3398]
+            nextSpeaker = msg.agent;
             const delay = Math.min(Math.max(msg.content.length * 5, 1000), 3000);
-            await new Promise(r => setTimeout(r, delay)); // Visual typing delay [cite: 3399]
+            await new Promise(r => setTimeout(r, delay));
 
-            messages = [...messages, msg]; // Append message for display [cite: 3399]
-            
-            // Track scores if the Judge declared a winner [cite: 3400]
+            messages = [...messages, msg];
+
+            // Track scores if the Judge declared a winner
             if (msg.agent === 'Judge') {
                 const match = msg.content.match(/Round Winner: (Debater_[A-Z])/i);
                 if (match && scores[match[1]] !== undefined) {
-                    scores[match[1]] += 1; // Update reactive scoreboard [cite: 3401]
+                    scores[match[1]] += 1;
                 }
             }
         }
-        
-        nextSpeaker = undefined; // Clear loader after all messages are "typed" [cite: 3402]
 
-        // 2. Trigger MAST failure mode analysis for the round just completed [cite: 3403]
+        nextSpeaker = undefined;
+
+        // 2. Trigger MAST failure mode analysis for the round just completed
         if (newMsgs.length > 0) {
             try {
                 const res = await fetch('http://localhost:8000/api/analyze-taxonomy', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ messages: newMsgs }) // Send round trace for analysis [cite: 3404]
+                    body: JSON.stringify({ messages: messages })
                 });
 
                 if (!res.ok) throw new Error(`Server responded with ${res.status}`);
 
                 const result = await res.json();
-                
-                // Re-assigning the whole object with the new round result triggers Svelte's reactivity 
+
+                // Re-assigning triggers Svelte's reactivity for the Taxonomy Card
                 roundAnalyses = { ...roundAnalyses, [round]: result };
             } catch (err) {
                 console.error("Taxonomy analysis failed:", err);
             }
+
+            // 3. Compute per-round keywords client-side via TF-IDF
+            const nlpResult = nlpAnalyze(messages, debaters.map(d => d.name));
+            if (nlpResult) {
+                const roundData = nlpResult.timeline.find(t => t.round === round);
+                if (roundData) {
+                    const all = Object.values(roundData.keywordsByDebater)
+                        .flat()
+                        .sort((a, b) => b.score - a.score);
+                    const seen = new Set<string>();
+                    const top5 = all.filter(k => !seen.has(k.term) && seen.add(k.term)).slice(0, 5);
+                    roundKeywords = { ...roundKeywords, [round]: top5 };
+                }
+            }
         }
     };
 
+    // Initializes the debate but PAUSES after Round 1 so user can choose mode
     const handleStartDebate = async () => {
         if (!topic.trim()) {
             error = "Please enter a debate topic.";
@@ -195,7 +289,7 @@ Your response MUST end with one of these exact phrases:`;
             sessionId = result.session_id;
             round = 1;
             await processNewMessages(result.messages);
-            status = 'paused';
+            status = 'paused'; // Pauses here to allow Manual vs Auto choice
         } catch (e: any) {
             error = `Backend Error: ${e.message}`;
             status = 'error';
@@ -203,22 +297,20 @@ Your response MUST end with one of these exact phrases:`;
         }
     };
 
+    // MANUAL MODE: Steps forward one round then pauses
     const handleNextRound = async () => {
         if (!sessionId) return;
         status = 'running';
         const lastSpeaker = messages[messages.length - 1]?.agent;
-        nextSpeaker = lastSpeaker === 'Judge' ? 'Debater_A' : 'Judge'; 
+        nextSpeaker = lastSpeaker === 'Judge' ? 'Debater_A' : 'Judge';
 
         try {
             const result = await continueDebateSession(sessionId);
             round++;
             await processNewMessages(result.messages);
+
             if (round >= MAX_ROUNDS) {
-                status = 'finished';
-                calculateWinner();
-                try {
-                    analysisResult = await analyzeDebate(messages);
-                } catch (err) { console.error("Analysis failed", err); }
+                await finishDebate();
             } else {
                 status = 'paused';
             }
@@ -228,6 +320,52 @@ Your response MUST end with one of these exact phrases:`;
             nextSpeaker = undefined;
         }
     };
+
+    // AUTO MODE: Runs continuously until done
+    const runAutoLoop = async () => {
+        status = 'running';
+        while (round < MAX_ROUNDS && status === 'running') {
+            if (!sessionId) break;
+
+            // Visual pause between rounds
+            await new Promise(r => setTimeout(r, 1500));
+
+            const lastSpeaker = messages[messages.length - 1]?.agent;
+            nextSpeaker = lastSpeaker === 'Judge' ? 'Debater_A' : 'Judge';
+
+            const result = await continueDebateSession(sessionId);
+            round++;
+            await processNewMessages(result.messages);
+        }
+
+        if (status !== 'error') {
+            await finishDebate();
+        }
+    };
+
+    // SHARED FINISH LOGIC: Calculates winner, Analyzes, and SAVES
+    const finishDebate = async () => {
+        status = 'finished';
+        calculateWinner();
+        try {
+            // 1. Get the High-Level Summary (Keywords, etc.)
+            let fullAnalysis = await analyzeDebate(messages);
+
+            // 2. INJECT MAST DATA: Add the detailed per-round logs we collected
+            if (fullAnalysis) {
+                (fullAnalysis as any).mast_breakdown = roundAnalyses;
+            }
+
+            analysisResult = fullAnalysis;
+
+            // 3. Auto-Save to Backend
+            if (sessionId && analysisResult) {
+                console.log("Saving debate with full logs...");
+                await saveDebate(sessionId, analysisResult);
+            }
+        } catch (err) { console.error("Analysis/Save failed", err);
+        }
+    };
 </script>
 
 <svelte:head>
@@ -235,97 +373,126 @@ Your response MUST end with one of these exact phrases:`;
 </svelte:head>
 
 <div class="min-h-screen bg-gray-900 text-gray-100 font-sans p-4 sm:p-6 lg:p-8">
-    <div class="max-w-8xl mx-auto">
-        <header class="text-center mb-8">
-            <h1 class="text-4xl sm:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-500">
+    <div class="max-w-8xl mx-auto flex flex-col gap-6">
+        <header class="text-center">
+            <h1 class="text-4xl sm:text-5xl font-bold text-transparent bg-clip-text bg-linear-to-r from-indigo-400 to-purple-500">
                 AI Debate Arena
             </h1>
             <p class="text-gray-400 mt-2">Powered by AutoGen & Python Backend</p>
         </header>
 
-        <main class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <aside class="lg:col-span-1 flex flex-col gap-6">
-                <div class="bg-gray-800/50 p-4 rounded-lg border border-gray-700">
-                    <label for="topic" class="block text-lg font-semibold text-indigo-300 mb-2">Debate Topic</label>
-                    <textarea
-                        id="topic"
-                        bind:value={topic}
-                        disabled={!isIdle}
-                        class="w-full h-24 bg-gray-900/80 p-2 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200"
-                        placeholder="e.g., Is pineapple on pizza a culinary masterpiece?"
-                    ></textarea>
-                    
-                    <div class="mt-4 flex space-x-4">
-                        {#if isPaused}
+        <!-- Horizontal top bar: topic + controls + agent configs -->
+        <div class="flex flex-row gap-4 items-stretch justify-center overflow-x-auto pb-2">
+            <!-- Topic + Controls box -->
+            <div class="bg-gray-800/50 p-4 rounded-lg border border-gray-700 shrink-0 w-72 flex flex-col">
+                <label for="topic" class="block text-lg font-semibold text-indigo-300 mb-2">Debate Topic</label>
+                <textarea
+                    id="topic"
+                    bind:value={topic}
+                    disabled={!isIdle}
+                    class="w-full flex-1 min-h-20 bg-gray-900/80 p-2 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200 text-sm resize-none"
+                    placeholder="e.g., Is pineapple on pizza a culinary masterpiece?"
+                ></textarea>
+
+                <div class="mt-3 flex flex-col gap-2">
+                    {#if isPaused}
+                        <div class="flex gap-2">
                             <button
                                 on:click={handleNextRound}
-                                class="w-full flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition duration-200 animate-pulse"
+                                class="flex-1 flex items-center justify-center gap-1 bg-green-600 hover:bg-green-700 text-white font-bold py-1.5 px-3 rounded-lg transition duration-200 text-sm"
                             >
-                                <ForwardIcon /> Next Round
+                                <ForwardIcon /> Next
                             </button>
-                        {:else}
                             <button
-                                on:click={handleStartDebate}
-                                disabled={!isIdle}
-                                class="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition duration-200"
+                                on:click={runAutoLoop}
+                                class="flex-1 flex items-center justify-center gap-1 bg-purple-600 hover:bg-purple-700 text-white font-bold py-1.5 px-3 rounded-lg transition duration-200 text-sm animate-pulse"
                             >
-                                {#if isLoading}
-                                    <div class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div>
-                                    Thinking...
-                                {:else}
-                                    <PlayIcon /> Start
-                                {/if}
+                                <PlayIcon /> Auto
                             </button>
-                        {/if}
-                       
+                        </div>
+                    {:else}
                         <button
-                            on:click={handleReset}
-                            disabled={isLoading && !isPaused}
-                            class="w-full flex items-center justify-center gap-2 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-500 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition duration-200"
+                            on:click={handleStartDebate}
+                            disabled={!isIdle}
+                            class="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-1.5 px-3 rounded-lg transition duration-200 text-sm"
                         >
-                            <RefreshIcon /> Reset
+                            {#if isLoading}
+                                <div class="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></div>
+                                Running...
+                            {:else}
+                                <PlayIcon /> Start Debate
+                            {/if}
                         </button>
-                    </div>
-                    {#if error}
-                        <p class="text-red-400 mt-2 text-sm">{error}</p>
                     {/if}
-                </div>
 
-                <div class="space-y-4">
-                    {#each agents as agent (agent.name)}
-                        <AgentConfigurator 
-                            {agent} 
-                            on:configChange={handleConfigChange} 
-                            on:remove={(e) => handleRemoveDebater(e.detail)}
-                            isRemovable={agent.name.startsWith('Debater_') && debaters.length > 2}
-                            disabled={!isIdle} 
-                        />
-                    {/each}
                     <button
-                        on:click={handleAddDebater}
-                        disabled={!isIdle}
-                        class="w-full flex items-center justify-center gap-2 border-2 border-dashed border-gray-600 hover:border-indigo-500 hover:text-indigo-400 text-gray-400 font-bold py-2 px-4 rounded-lg transition duration-200 disabled:cursor-not-allowed disabled:border-gray-700 disabled:text-gray-600"
+                        on:click={handleReset}
+                        disabled={isLoading && !isPaused}
+                        class="w-full flex items-center justify-center gap-2 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-500 disabled:cursor-not-allowed text-white font-bold py-1.5 px-3 rounded-lg transition duration-200 text-sm"
                     >
-                        <PlusCircleIcon /> Add Debater
+                        <RefreshIcon /> Reset
                     </button>
                 </div>
-            </aside>
 
-            <section class="lg:col-span-2 h-[80vh] flex flex-col gap-4">
-                <Scoreboard {topic} {scores} {round} {winner} />
-                <DebateTranscript 
-                    {messages} 
-                    {isLoading} 
-                    {nextSpeaker}
-                    currentRound={round}
-                    {roundAnalyses} 
-                />
-            </section>
-        </main>
-        
+                {#if error}
+                    <p class="text-red-400 mt-2 text-xs">{error}</p>
+                {/if}
+
+                {#if winner}
+                    <div class="mt-3 p-2 bg-yellow-900/30 border border-yellow-600/50 rounded-lg text-center">
+                        <p class="text-yellow-300 font-bold text-sm">
+                            {winner === 'Tie' ? '🤝 It\'s a Tie!' : `🏆 ${winner.replace('_', ' ')} Wins!`}
+                        </p>
+                    </div>
+                {:else if round > 0}
+                    <p class="text-gray-400 text-xs mt-2 text-center">Round {round} / {MAX_ROUNDS}</p>
+                {/if}
+            </div>
+
+            <!-- Agent configurators side by side -->
+            {#each agents as agent (agent.name)}
+                <div class="shrink-0 w-64 flex flex-col">
+                    <AgentConfigurator
+                        {agent}
+                        compact={true}
+                        on:configChange={handleConfigChange}
+                        on:remove={(e) => handleRemoveDebater(e.detail)}
+                        isRemovable={agent.name.startsWith('Debater_') && debaters.length > 2}
+                        disabled={!isIdle}
+                    />
+                </div>
+            {/each}
+
+            <!-- Add Debater: same-height box -->
+            <div class="shrink-0 w-48">
+                <button
+                    on:click={handleAddDebater}
+                    disabled={!isIdle}
+                    class="w-full h-full flex flex-col items-center justify-center gap-2 border-2 border-dashed border-gray-600 hover:border-indigo-500 hover:text-indigo-400 text-gray-400 font-bold rounded-lg transition duration-200 disabled:cursor-not-allowed disabled:border-gray-700 disabled:text-gray-600"
+                >
+                    <PlusCircleIcon />
+                    <span>Add Debater</span>
+                </button>
+            </div>
+        </div>
+
         {#if status === 'finished' && analysisResult}
-            <section class="mt-8">
+            <section>
                 <DebateAnalysis {analysisResult} debaters={debaters.map(d => d.name)} />
+            </section>
+        {/if}
+
+        {#if messages.length > 1}
+            <section class="pt-4 border-t border-gray-700/50">
+                <DebateVisualization
+                    {messages}
+                    {roundAnalyses}
+                    {roundKeywords}
+                    {regeneratedRounds}
+                    {isPaused}
+                    currentRound={round}
+                    on:regenerate={handleRegenerateFromViz}
+                />
             </section>
         {/if}
     </div>

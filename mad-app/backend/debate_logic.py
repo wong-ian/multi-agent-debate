@@ -1,5 +1,8 @@
 import os
 import uuid
+import json
+import copy
+from datetime import datetime
 from typing import List, Dict
 from dotenv import load_dotenv
 from autogen.agentchat import AssistantAgent, GroupChat, GroupChatManager, UserProxyAgent
@@ -91,7 +94,10 @@ def create_debate_session(topic: str, agents_config: List[Dict]) -> Dict:
         "group_chat": group_chat,
         "manager": manager,
         "user_proxy": user_proxy,
-        "sent_messages_count": len(group_chat.messages)
+        "sent_messages_count": len(group_chat.messages),
+        "topic": topic,
+        "agents_config": agents_config,
+        "checkpoints": {1: copy.deepcopy(group_chat.messages)}
     }
 
     return {
@@ -119,14 +125,196 @@ def continue_debate_session(session_id: str) -> Dict:
         clear_history=False
     )
 
-    # Key Change: We pass the FULL message list to parse_messages, 
+    # Key Change: We pass the FULL message list to parse_messages,
     # but tell it to only return items starting from `last_count`
     all_messages = group_chat.messages
     new_messages = parse_messages(all_messages, start_index=last_count)
-    
+
     session["sent_messages_count"] = len(all_messages)
+
+    # Save checkpoint for the round that just completed
+    if new_messages:
+        completed_round = new_messages[-1]["round"]
+        session["checkpoints"][completed_round] = copy.deepcopy(all_messages)
 
     return {
         "session_id": session_id,
         "messages": new_messages
     }
+    
+    
+def regenerate_round(session_id: str, round_number: int, mast_failures: List[str], human_input: str) -> Dict:
+    """
+    Regenerates round N using a clean single-shot GroupChat so we avoid
+    GroupChatManager.__init__ wiping preloaded group_chat.messages.
+
+    Strategy:
+      1. Parse checkpoint[N-1] into readable text and inject it as context.
+      2. Run a fresh one-shot GroupChat (messages=[]) that produces A + B + Judge.
+      3. Append those raw AutoGen message dicts onto checkpoint[N-1] to rebuild
+         the original session state for correct continuation.
+    """
+    if session_id not in SESSIONS:
+        return {"error": "Session not found"}
+
+    session = SESSIONS[session_id]
+    checkpoints = session.get("checkpoints", {})
+    agents_config = session.get("agents_config", [])
+    topic = session.get("topic", "Unknown Topic")
+    prev_round = round_number - 1
+
+    if prev_round not in checkpoints:
+        return {"error": f"No checkpoint for round {prev_round}. Cannot regenerate round {round_number}."}
+
+    # Build a human-readable summary of previous rounds from the checkpoint
+    checkpoint_msgs = checkpoints[prev_round]
+    history = [
+        m for m in parse_messages(checkpoint_msgs, start_index=0)
+        if m.get("agent") not in ("Moderator", "unknown")
+    ]
+    history_text = "\n\n".join(
+        f"[Round {m['round']} — {m['agent']}]:\n{m['content']}"
+        for m in history
+    )
+
+    # Build fresh agents for this isolated generation
+    debaters = []
+    judge = None
+    for conf in agents_config:
+        if conf["name"].startswith("Debater_"):
+            debaters.append(AssistantAgent(
+                name=conf["name"],
+                system_message=conf["systemMessage"],
+                llm_config=LLM_CONFIG,
+            ))
+        elif conf["name"] == "Judge":
+            judge = AssistantAgent(
+                name=conf["name"],
+                system_message=conf["systemMessage"],
+                llm_config=LLM_CONFIG,
+            )
+
+    regen_proxy = UserProxyAgent(
+        name="Moderator",
+        human_input_mode="NEVER",
+        code_execution_config=False,
+    )
+
+    # max_round = initial message + one turn per debater + judge
+    num_speakers = len(debaters) + 1  # debaters + judge
+    regen_chat = GroupChat(
+        agents=[regen_proxy, *debaters, judge],
+        messages=[],                         # CLEAN start — avoids GroupChatManager.reset() bug
+        max_round=1 + num_speakers,
+        speaker_selection_method="round_robin",
+    )
+    regen_manager = GroupChatManager(groupchat=regen_chat, llm_config=LLM_CONFIG)
+
+    # Build context-rich initial message
+    failure_lines = "\n".join(f"- {f}" for f in mast_failures) if mast_failures else "None detected."
+    human_note = human_input.strip() if human_input.strip() else "No additional direction provided."
+    initial_msg = (
+        f"Debate Topic: {topic}\n\n"
+        f"DEBATE HISTORY (Rounds 1\u2013{prev_round}):\n{history_text}\n\n"
+        f"MODERATOR INTERVENTION \u2014 Regenerating Round {round_number}\n"
+        f"Human Moderator Direction: {human_note}\n"
+        f"MAST failure modes to correct in this round:\n{failure_lines}\n\n"
+        f"Now conduct Round {round_number} of the debate."
+    )
+
+    regen_proxy.initiate_chat(regen_manager, message=initial_msg)
+
+    # regen_chat.messages = [initial_msg_dict, A_dict, B_dict, Judge_dict]
+    raw_new_msgs = regen_chat.messages[1:]   # drop the initial moderator prompt
+
+    if not raw_new_msgs:
+        return {"error": "Regeneration produced no output. Please try again."}
+
+    # Parse just the new messages; they'll get round=1 from a clean slate — fix below
+    parsed_new = parse_messages(regen_chat.messages, start_index=1)
+    new_messages = [{**m, "round": round_number} for m in parsed_new]
+
+    # Rebuild the original session so future continue_debate_session calls work correctly:
+    # checkpoint[N-1] + [raw A, B, Judge replies for round N]
+    original_group_chat = session["group_chat"]
+    original_group_chat.messages = copy.deepcopy(checkpoint_msgs) + raw_new_msgs
+    # Set max_round to current length (matching the pattern set by create/continue)
+    original_group_chat.max_round = len(original_group_chat.messages)
+
+    session["sent_messages_count"] = len(original_group_chat.messages)
+    session["checkpoints"][round_number] = copy.deepcopy(original_group_chat.messages)
+
+    return {"session_id": session_id, "messages": new_messages}
+
+
+def save_debate_to_file(session_id: str, analysis_result: Dict) -> Dict:
+    """
+    Compiles the debate history and saves it to the /saved_debates folder.
+    """
+    import os, json, re # Ensure these are imported at the top
+    from collections import Counter
+    from autogen.agentchat import AssistantAgent
+
+    if session_id not in SESSIONS:
+        return {"error": "Session not found"}
+
+    session = SESSIONS[session_id]
+    messages = session["group_chat"].messages
+    
+    # 1. Parse Transcript & Scores (Uses the existing parse_messages logic)
+    transcript = parse_messages(messages, start_index=0)
+    
+    # Calculate Scores/Winner based on transcript
+    scores = Counter()
+    for msg in transcript:
+        if msg['agent'] == 'Judge':
+            match = re.search(r"Round Winner: (Debater_[A-Z])", msg['content'], re.IGNORECASE)
+            if match:
+                scores[match.group(1)] += 1
+    
+    final_scores = dict(scores) # Ensures standard dict format
+    winner = max(final_scores, key=final_scores.get) if final_scores else "Tie"
+    
+    # Check for ties
+    if final_scores:
+        top_score = final_scores[winner]
+        if len([k for k, v in final_scores.items() if v == top_score]) > 1:
+            winner = "Tie"
+
+    # 2. Build Configuration List
+    config = []
+    for agent in session["group_chat"].agents:
+        if isinstance(agent, AssistantAgent):
+            config.append({
+                "name": agent.name,
+                "system_message": agent.system_message
+            })
+
+    # 3. Construct Final JSON
+    data = {
+        "metadata": {
+            "topic": messages[0].get("content", "Unknown Topic").replace("Debate Topic: ", ""),
+            "total_rounds": transcript[-1]['round'] if transcript else 0,
+            "winner": winner,
+            "final_scores": final_scores
+        },
+        "configuration": config,
+        "transcript": transcript,
+        "analysis": analysis_result
+    }
+
+    # 4. Save to Disk
+    directory = "saved_debates"
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+    safe_topic = re.sub(r'[^a-zA-Z0-9]', '_', data['metadata']['topic'][:30])
+    filename = f"{directory}/{safe_topic}.json"
+    
+    with open(filename, "w", encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+    # 5. Clean up the session state (CRUCIAL: Releases memory)
+    del SESSIONS[session_id]
+
+    return {"status": "saved", "filename": filename}
