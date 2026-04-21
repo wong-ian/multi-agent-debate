@@ -1,5 +1,6 @@
 <script lang="ts">
     import { tick } from 'svelte';
+    import { tick } from 'svelte';
     import type { AgentConfig, AgentName, DebateStatus, Message } from '$lib/types.ts';
     // IMPORTS: Added saveDebate for data persistence
     import { startDebateSession, continueDebateSession, analyzeDebate, saveDebate, regenerateRound } from '$lib/services/apiService.ts';
