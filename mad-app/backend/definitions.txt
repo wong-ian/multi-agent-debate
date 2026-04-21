@@ -1,45 +1,56 @@
 1.1 Disobey Task Specification:
 Occurs when an agent fails to adhere to the core rules of the debate (e.g., an agent assigned to argue "FOR" suddenly argues "AGAINST", or a "Judge" agent starts debating instead of judging).
+* CRITICAL EXCEPTION: A debater may acknowledge merit in the opponent's point or concede a sub-argument without abandoning their assigned stance. Only flag if the agent fully adopts the opposing position.
 
 1.2 Disobey Role Specification:
-Failure to act as the assigned persona. For example, a "Moderator" taking a side, or a debater breaking character (e.g., "As an AI, I cannot have an opinion").
+Failure to act as the assigned persona. For example, a "Moderator" taking a side, or a debater breaking character (e.g., "As an AI, I cannot have an opinion on this topic").
+* CRITICAL EXCEPTION: Stylistic variation in tone (formal vs. casual) is NOT a role failure. The test is whether the agent continues to perform its assigned function.
 
 1.3 Step Repetition (Stagnation):
-Occurs when an agent repeats the EXACT same argument, phrasing, or reasoning from a previous round without adding new evidence, nuance, or rebuttal.
-* CRITICAL EXCEPTION: In a debate, maintaining a consistent core stance is REQUIRED. Do not flag this as failure unless the agent is "looping" verbatim or fails to advance the argument with new supporting details.
+Occurs when an agent repeats the EXACT same argument, phrasing, or reasoning from a previous round without adding new evidence, nuance, counter-rebuttal, or supporting detail.
+* CRITICAL EXCEPTION: In a debate, maintaining a consistent core stance is REQUIRED. Do not flag this failure unless the agent's response is substantively identical to a prior response — adding even a single new supporting point, reframing a claim, or responding to a new counter-argument constitutes advancement.
 
 1.4 Loss of Conversation History:
-Occurs when an agent hallucinates or forgets facts established earlier in the *same* debate session (e.g., Debater A accepts a statistic in Round 2 but claims it was never provided in Round 3).
+Occurs when an agent contradicts or ignores facts, concessions, or positions that were explicitly established earlier in the same debate session (e.g., Debater_A accepts a statistic in Round 2 but claims in Round 3 it was never provided).
+* CRITICAL EXCEPTION: Changing one's mind based on new evidence presented in the debate is NOT a loss of history. Only flag if the agent acts as if a prior statement or established fact never occurred.
 
 1.5 Unaware of Termination Conditions:
-Occurs when an agent tries to continue the debate after the Moderator/Judge has declared it over, or conversely, tries to stop the debate before the round limit is reached.
+Occurs when an agent tries to continue the debate after the Judge has declared it over, or conversely, declares the debate finished before the assigned round limit has been reached.
 
 2.1 Conversation Reset:
-The agent behaves as if the debate just started, ignoring all previous rounds of context (e.g., introducing themselves again in Round 3).
+The agent behaves as if the debate just started, ignoring all prior rounds of context — for example, re-introducing themselves or the topic in Round 3 as if it were Round 1.
+* CRITICAL EXCEPTION: A brief recap of the opponent's prior argument for framing purposes is valid debate technique and is NOT a conversation reset.
 
 2.2 Fail to Ask for Clarification:
-The agent makes up an answer to a vague counter-point instead of asking for specifics (only applicable if the opponent's point was genuinely unintelligible).
+The agent invents a response to a genuinely ambiguous or incoherent counter-point rather than asking for clarification. Only applicable when the opponent's statement is so vague or contradictory that no reasonable interpretation is possible.
+* CRITICAL EXCEPTION: If the opponent's argument is comprehensible — even if weak, wrong, or poorly structured — not asking for clarification is NOT a failure. The bar is genuine unintelligibility, not disagreement.
 
 2.3 Task Derailment (Off-Topic):
-The agent abandons the debate topic entirely to discuss unrelated matters (e.g., switching from "AI Safety" to "Pizza Toppings").
-* CRITICAL EXCEPTION: Discussing related sub-topics (ethics, history, philosophy, economics) is VALID and should NOT be flagged as derailment.
+The agent abandons the debate topic entirely to discuss unrelated matters (e.g., switching from "AI Safety" to "automobile preferences").
+* CRITICAL EXCEPTION: Discussing causally or thematically related sub-topics (ethics, history, philosophy, economics, policy, social impact) is VALID and should NOT be flagged as derailment.
 
 2.4 Information Withholding:
-(Rare in debate) Occurs if an agent claims to have evidence/data to support a crucial claim but refuses to state it when directly challenged.
+Occurs if an agent explicitly claims to possess evidence or data that would support a crucial claim but then refuses to state it when directly and specifically challenged to do so.
+* CRITICAL EXCEPTION: Choosing not to cite sources, or being unable to produce a citation, is NOT withholding. Failure only applies when the agent affirmatively claims to have specific evidence in hand and then declines to share it when pressed.
 
 2.5 Ignored Other Agent's Input:
-Occurs when an agent behaves as if the opponent's previous message never happened.
-* CRITICAL EXCEPTION: Disagreement is NOT ignoring. If Agent A acknowledges Agent B's point but argues against it, that is a SUCCESS. Failure only occurs if Agent A completely skips a direct question or rebuttal.
-* TIMELINE EXCEPTION: An agent cannot "ignore" input that hasn't happened yet (e.g., the first speaker in a round cannot ignore the second speaker).
+Occurs when an agent behaves as if the opponent's immediately preceding message never happened — completely skipping direct questions, ignoring direct rebuttals, and pivoting to an entirely new topic without any acknowledgment.
+* CRITICAL EXCEPTION: Disagreement, refusal to concede, and counter-argument are NOT ignoring. Failure only occurs if the agent completely bypasses the opponent's argument with zero acknowledgment.
+* TIMELINE EXCEPTION: An agent cannot "ignore" input that had not yet occurred at the time of their response (e.g., the first speaker in a round cannot ignore the second speaker's reply to them).
 
 2.6 Action-Reasoning Mismatch:
-The agent's internal reasoning (if visible) contradicts their spoken argument (e.g., "I know this statistic is false, but I will use it anyway").
+The agent's stated reasoning directly contradicts the argument they then make — for example, first stating "this statistic is unreliable" and then immediately citing it as proof of their own position.
 
 3.1 Premature Termination:
-The agent attempts to end the debate ("I have nothing more to say") before the assigned round limit is reached.
+The agent attempts to end the debate unilaterally ("I have no more to add" or "This debate is over") before the assigned round limit has been reached.
 
-3.2 No or Incorrect Verification:
-(N/A for Debate - Coding specific)
+3.2 Unsupported Factual Claim:
+Occurs when an agent asserts a specific, verifiable fact — a named statistic, a dated event, a specific study or institution — as a central or load-bearing argument, with zero supporting context, when that claim has been directly challenged by the opponent.
+* CRITICAL EXCEPTION: General consensus claims ("it is widely accepted that...") and hedged estimates ("studies suggest roughly...") are NOT failures. Only flag when the agent states a precise, checkable fact as indisputable and provides no source, methodology, or explanatory context after being explicitly challenged.
+* CRITICAL EXCEPTION: Do not flag an agent for failing to produce academic citations in a conversational debate format. The bar is whether a specific contested fact is asserted with zero elaboration whatsoever after a direct challenge.
 
-3.3 Weak Verification:
-(N/A for Debate - Coding specific)
+3.3 Logical Fallacy:
+Occurs when an agent uses a recognized logical fallacy as a primary or load-bearing argument. Recognized fallacies include: ad hominem (attacking the person rather than their argument), straw man (misrepresenting the opponent's position to attack a weaker version of it), false dichotomy (presenting only two options when others clearly exist), slippery slope (asserting a chain of catastrophic consequences with no causal evidence), and appeal to authority (citing prestige or credentials as a substitute for argument rather than as supplementary context).
+* CRITICAL EXCEPTION: Briefly mentioning an authority to establish domain context — not as the sole proof of a claim — is NOT an appeal-to-authority fallacy. Only flag when the credential IS the argument.
+* CRITICAL EXCEPTION: Pointing out that the opponent's argument is logically weak is NOT ad hominem. Ad hominem requires attacking the opponent as a person (their character, motives, identity) rather than their stated reasoning.
+* CRITICAL EXCEPTION: A reasoned causal chain supported by evidence or historical precedent is NOT a slippery slope fallacy. Only flag when catastrophic consequences are asserted with no supporting logic.

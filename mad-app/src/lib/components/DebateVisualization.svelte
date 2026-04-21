@@ -33,6 +33,10 @@
 
     const FONT = "'Calibri', 'Calibri Regular', sans-serif";
 
+    const REFERENTIAL_FAILURE_IDS = new Set(['1.3', '1.4', '2.5']);
+    let swimCardPositions: Record<string, { x: number; y: number }> = {};
+    let vertCardPositions: Record<string, { x: number; y: number }> = {};
+
     const COLORS: Record<string, string> = {
         Debater_A: '#6366f1',
         Debater_B: '#10b981',
@@ -144,6 +148,7 @@
         if (!swimlaneContainer) return;
         const svgSel = d3.select(swimlaneContainer).select<SVGSVGElement>('svg');
         svgSel.selectAll('*').remove();
+        swimCardPositions = {};
 
         const MERGED_DATA = buildMergedData();
         if (MERGED_DATA.length === 0) return;
@@ -168,6 +173,17 @@
             .attr('width', totalWidth)
             .attr('height', swimlaneHeight)
             .style('font-family', FONT);
+
+        // Arrowhead marker for referential arrows
+        svg.append('defs').append('marker')
+            .attr('id', 'arrowhead-swimlane')
+            .attr('viewBox', '0 0 10 10')
+            .attr('refX', 10).attr('refY', 5)
+            .attr('markerWidth', 5).attr('markerHeight', 5)
+            .attr('orient', 'auto')
+            .append('path')
+            .attr('d', 'M 0 0 L 10 5 L 0 10 z')
+            .attr('fill', '#ef4444');
 
         const yScale = d3.scaleBand()
             .domain(agents)
@@ -272,6 +288,9 @@
                     .attr('cx', x + 8).attr('cy', y + 10)
                     .attr('r', 4).attr('fill', COLORS.Failure);
             }
+
+            // Store card center for referential arrows
+            swimCardPositions[`${d.round}_${d.agent}`] = { x: x + boxWidth / 2, y: y + 32 };
         });
 
         // Keyword sections below swim lanes
@@ -336,6 +355,36 @@
                 });
             }
         });
+
+        // Draw referential arrows for failures 1.3, 1.4, 2.5
+        Object.values(roundAnalyses).forEach((analysis: any) => {
+            if (!analysis?.failures) return;
+            analysis.failures
+                .filter((f: any) => f.detected && REFERENTIAL_FAILURE_IDS.has(f.id) && f.failedBy && f.refersTo)
+                .forEach((f: any) => {
+                    const from = swimCardPositions[`${f.failedBy.round}_${f.failedBy.agent}`];
+                    const to = swimCardPositions[`${f.refersTo.round}_${f.refersTo.agent}`];
+                    if (!from || !to) return;
+
+                    let pathD: string;
+                    if (f.failedBy.round > f.refersTo.round) {
+                        const controlY = Math.min(from.y, to.y) - 60;
+                        pathD = `M ${from.x} ${from.y} C ${from.x} ${controlY}, ${to.x} ${controlY}, ${to.x} ${to.y}`;
+                    } else {
+                        const midX = (from.x + to.x) / 2;
+                        pathD = `M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`;
+                    }
+
+                    svg.append('path')
+                        .attr('d', pathD)
+                        .attr('fill', 'none')
+                        .attr('stroke', '#ef4444')
+                        .attr('stroke-width', 2.5)
+                        .attr('opacity', 0.6)
+                        .attr('class', 'drift-line')
+                        .attr('marker-end', 'url(#arrowhead-swimlane)');
+                });
+        });
     }
 
     function renderVertical() {
@@ -368,10 +417,22 @@
 
         const svgSel = d3.select(verticalContainer).select<SVGSVGElement>('svg');
         svgSel.selectAll('*').remove();
+        vertCardPositions = {};
         svgSel
             .attr('height', totalHeight)
             .attr('width', '100%')
             .style('font-family', FONT);
+
+        // Arrowhead marker for referential arrows
+        svgSel.append('defs').append('marker')
+            .attr('id', 'arrowhead-vertical')
+            .attr('viewBox', '0 0 10 10')
+            .attr('refX', 10).attr('refY', 5)
+            .attr('markerWidth', 4).attr('markerHeight', 4)
+            .attr('orient', 'auto')
+            .append('path')
+            .attr('d', 'M 0 0 L 10 5 L 0 10 z')
+            .attr('fill', '#ef4444');
 
         const centerX = containerWidth / 2;
 
@@ -634,8 +695,37 @@
                     .attr('stroke', d.hasFailure ? COLORS.Failure : '#374151')
                     .attr('stroke-width', 3);
 
+                // Store card center for referential arrows
+                vertCardPositions[`${d.round}_${d.agent}`] = {
+                    x: xOffset + 170,
+                    y: currentY + nodeHeight / 2
+                };
+
                 currentY += nodeHeight + gap;
             });
+        });
+
+        // Draw referential arrows for failures 1.3, 1.4, 2.5
+        Object.values(roundAnalyses).forEach((analysis: any) => {
+            if (!analysis?.failures) return;
+            analysis.failures
+                .filter((f: any) => f.detected && REFERENTIAL_FAILURE_IDS.has(f.id) && f.failedBy && f.refersTo)
+                .forEach((f: any) => {
+                    const from = vertCardPositions[`${f.failedBy.round}_${f.failedBy.agent}`];
+                    const to = vertCardPositions[`${f.refersTo.round}_${f.refersTo.agent}`];
+                    if (!from || !to) return;
+
+                    const pathD = `M ${from.x} ${from.y} C ${centerX} ${from.y}, ${centerX} ${to.y}, ${to.x} ${to.y}`;
+
+                    svgSel.append('path')
+                        .attr('d', pathD)
+                        .attr('fill', 'none')
+                        .attr('stroke', '#ef4444')
+                        .attr('stroke-width', 2.5)
+                        .attr('opacity', 0.6)
+                        .attr('class', 'drift-line')
+                        .attr('marker-end', 'url(#arrowhead-vertical)');
+                });
         });
 
         // Commit position maps reactively
@@ -884,5 +974,13 @@
     }
     :global(.swimlane-box:hover rect:first-child) {
         fill: #374151;
+    }
+    :global(.drift-line) {
+        stroke-dasharray: 5;
+        animation: dash 20s linear infinite;
+    }
+    @keyframes dash {
+        from { stroke-dashoffset: 500; }
+        to   { stroke-dashoffset: 0; }
     }
 </style>

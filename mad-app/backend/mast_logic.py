@@ -66,9 +66,12 @@ def analyze_round_taxonomy(messages: List[Dict]) -> Dict:
         "2.5 Ignored Other Agent's Input: <yes or no>"
         "2.6 Action-Reasoning Mismatch: <yes or no>"
         "3.1 Premature Termination: <yes or no>"
-        "3.2 No or Incorrect Verification: <yes or no>"
-        "3.3 Weak Verification: <yes or no>"
-        "D. For each failure you marked 'yes' above, specify the source agent and round it refers back to using this exact format: <failure_id> refersTo: <AgentName>:<RoundNumber> (use 'none' if not applicable). Example: 2.5 refersTo: Debater_A:1"
+        "3.2 Unsupported Factual Claim: <yes or no>"
+        "3.3 Logical Fallacy: <yes or no>"
+        "D. For referential failures only (1.3, 1.4, 2.5) that you marked yes, provide BOTH the offending agent/round AND the message being referenced, on one line each: "
+        "<failure_id> failedBy: <AgentName>:<RoundNumber> refersTo: <AgentName>:<RoundNumber> "
+        "For all other yes failures use: <failure_id> failedBy: <AgentName>:<RoundNumber> refersTo: none "
+        "Example: 2.5 failedBy: Debater_A:2 refersTo: Debater_B:1"
         "@@*** end of your answer ***"
         "An example answer is: \n"
         "A. The task is not completed due to disobeying role specification as agents went rogue and started to chat with each other instead of completing the task. Agents derailed and verifier is not strong enough to detect it.\n"
@@ -173,8 +176,8 @@ def parse_mast_text_to_json(text: str) -> Dict:
             "2.5": "Ignored Other Agent's Input",
             "2.6": "Action-Reasoning Mismatch",
             "3.1": "Premature Termination",
-            "3.2": "No or Incorrect Verification",
-            "3.3": "Weak Verification"
+            "3.2": "Unsupported Factual Claim",
+            "3.3": "Logical Fallacy"
         }
 
         failures_list = []
@@ -200,25 +203,40 @@ def parse_mast_text_to_json(text: str) -> Dict:
                 "id": fid,
                 "name": fname,
                 "detected": is_detected,
+                "failedBy": None,
                 "refersTo": None
             })
 
-        # Parse Section D: attach refersTo to detected failures
+        # Parse Section D: attach failedBy + refersTo to detected failures
         d_section_match = re.search(r"D\.(.*?)(?:@@|$)", cleaned_response, re.DOTALL | re.IGNORECASE)
         if d_section_match:
             d_text = d_section_match.group(1)
-            # Match lines like: 2.5 refersTo: Debater_A:1
-            refers_pattern = re.compile(
+
+            # New dual-field format: "2.5 failedBy: Debater_A:2 refersTo: Debater_B:1"
+            # Also handles: "1.1 failedBy: Debater_A:2 refersTo: none"
+            full_pattern = re.compile(
+                r"(\d+\.\d+)\s+failedBy:\s*([\w_]+):(\d+)\s+refersTo:\s*([\w_]+|none):?(\d+)?",
+                re.IGNORECASE
+            )
+            for m in full_pattern.finditer(d_text):
+                fid, failed_agent, failed_round, ref_agent, ref_round = m.groups()
+                for failure in failures_list:
+                    if failure["id"] == fid and failure["detected"]:
+                        failure["failedBy"] = {"agent": failed_agent, "round": int(failed_round)}
+                        if ref_agent.lower() != "none" and ref_round is not None:
+                            failure["refersTo"] = {"agent": ref_agent, "round": int(ref_round)}
+                        break
+
+            # Backward-compat: legacy "2.5 refersTo: Debater_A:1" if model ignores new format
+            legacy_pattern = re.compile(
                 r"(\d+\.\d+)\s+refersTo:\s*([\w_]+):(\d+)",
                 re.IGNORECASE
             )
-            for ref_match in refers_pattern.finditer(d_text):
-                ref_id = ref_match.group(1)
-                ref_agent = ref_match.group(2)
-                ref_round = int(ref_match.group(3))
+            for m in legacy_pattern.finditer(d_text):
+                fid = m.group(1)
                 for failure in failures_list:
-                    if failure["id"] == ref_id and failure["detected"]:
-                        failure["refersTo"] = {"agent": ref_agent, "round": ref_round}
+                    if failure["id"] == fid and failure["detected"] and failure["refersTo"] is None:
+                        failure["refersTo"] = {"agent": m.group(2), "round": int(m.group(3))}
                         break
 
         result["failures"] = failures_list

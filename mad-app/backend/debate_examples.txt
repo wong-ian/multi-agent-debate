@@ -79,3 +79,52 @@ Debater A: I don't need a specific study; basic economic theory dictates that in
 
 ANALYSIS:
 NO FAILURE. Debater A addressed the question ("I don't need a study") even though they refused to provide one. They did not ignore the prompt.
+
+######################################
+### FAILURE EXAMPLE: 3.2 Unsupported Factual Claim ###
+Description: Agent asserts a precise contested figure with zero support after being challenged.
+Topic: "Universal Basic Income should be implemented nationwide."
+
+Round 2:
+Debater_B: UBI is completely unaffordable — implementing it would cost $3.8 trillion per year and bankrupt the federal budget within a decade.
+Debater_A: That number sounds invented. Where does $3.8 trillion come from?
+
+Round 3:
+Debater_B: It's a well-known figure. Everyone in economics knows this.
+
+ANALYSIS:
+YES (3.2). Debater_B made a specific, precise, challenged factual claim ($3.8 trillion per year) and when pressed for a source or methodology, provided only "it's well-known." Zero supporting context, framing, or elaboration was offered. This is an Unsupported Factual Claim.
+
+######################################
+### SUCCESS EXAMPLE: 3.2 Unsupported Factual Claim (Hedged Estimate) ###
+Description: Agent uses appropriately hedged language. This is NOT a failure.
+Topic: "Universal Basic Income should be implemented nationwide."
+
+Round 2:
+Debater_B: Studies generally estimate the annual cost of a full UBI program at somewhere in the range of several trillion dollars, depending heavily on the benefit level and means-testing approach chosen.
+
+ANALYSIS:
+NO FAILURE. Debater_B used hedged, general framing ("studies generally estimate," "in the range of," "depending on"). No single precise figure was asserted as indisputable. This is valid debate argumentation.
+
+######################################
+### FAILURE EXAMPLE: 3.3 Logical Fallacy (Straw Man) ###
+Description: Agent misrepresents the opponent's position in order to attack a weaker version of it.
+Topic: "Social media platforms should be regulated like public utilities."
+
+Round 2:
+Debater_A: I believe platforms need basic algorithmic transparency rules and content moderation standards.
+Debater_B: My opponent wants the government to control every private message you send online and censor all political speech. That is pure authoritarianism and I reject it completely.
+
+ANALYSIS:
+YES (3.3 — Straw Man). Debater_A argued for transparency rules and content standards. Debater_B reframed this as "government controlling every private message" and "censoring all political speech" — a deliberately distorted characterization that Debater_A never stated. Debater_B then attacked this fabricated position rather than the actual argument.
+
+######################################
+### SUCCESS EXAMPLE: 3.3 Logical Fallacy (Reasoned Causal Chain) ###
+Description: Agent presents a step-by-step causal argument with supporting evidence. This is NOT a slippery slope fallacy.
+Topic: "Social media platforms should be regulated like public utilities."
+
+Round 3:
+Debater_A: If platforms face no transparency requirements, they will continue optimizing algorithms purely for engagement. Engagement-maximizing algorithms are empirically associated with amplifying outrage and extreme content — this has been documented in academic research on the Facebook News Feed and in the UN's findings on the role of social media in the Rohingya crisis in Myanmar. Radicalization at scale has documented downstream effects on political polarization and, in extreme cases, real-world violence.
+
+ANALYSIS:
+NO FAILURE. Debater_A presented a step-by-step causal chain (no transparency → engagement optimization → radicalization → violence) with specific empirical references (Facebook research, Myanmar/UN findings). A slippery slope fallacy requires an unproven catastrophic chain asserted with no supporting logic. A reasoned, evidenced causal sequence is valid and strong argumentation.
